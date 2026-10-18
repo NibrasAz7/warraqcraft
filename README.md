@@ -155,12 +155,16 @@ The design notes live in [`docs/COLLABORATION.md`](docs/COLLABORATION.md).
 
 ## AI direction
 
-Basic BYO-provider AI assistance exists behind `craft-ai`, but the full
-AI work is planned as a separate harness: memory, task system, system
-prompt, command permissions, orchestration and safety boundaries. Local
-Ollama setup should become automatic where possible; hosted providers
-should only require provider selection plus an API key. The application
-must remain fully useful with AI disabled.
+The AI assist panel is provider-based: Ollama gets a one-click local
+setup flow (detect or install the CLI, start the service, pull the
+selected model and probe the endpoint), while OpenAI, OpenRouter and
+custom OpenAI-compatible endpoints only need endpoint/model plus a
+session-only token. Headless agents can use `ai.providers`, `ai.probe`
+and `ai.ask` through the CLI/control/MCP command surface.
+
+The full AI harness is still planned separately: memory, task system,
+system prompt, command permissions, orchestration and safety
+boundaries. The application remains fully useful with AI disabled.
 
 The harness plan lives in [`docs/AI-HARNESS.md`](docs/AI-HARNESS.md).
 

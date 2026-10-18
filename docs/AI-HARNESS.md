@@ -1,9 +1,30 @@
 # WarraqCraft AI harness plan
 
 This document is the standalone plan for the AI harness. It is separate
-from the small BYO-provider assist panel: the harness is the controlled
-system that gives an agent project context, memory, tasks and safe access
-to engine commands.
+from the provider assist implemented in the desktop UI: the harness is
+the controlled system that gives an agent project context, memory, tasks
+and safe access to engine commands.
+
+## Implemented provider path
+
+The current phase-2 provider surface is intentionally smaller than the
+full harness:
+
+- **Desktop UI:** provider preset picker (`Ollama`, `OpenAI`,
+  `OpenRouter`, custom), endpoint/model fields, session-only token,
+  advertised-model picker, probe and ask actions.
+- **Automated Ollama:** the local preset can detect `ollama`, start its
+  service, pull the selected model and probe `/v1/models`. Windows uses
+  `winget` and macOS uses Homebrew for the explicit install step; other
+  platforms report a manual-install status rather than running a remote
+  shell script.
+- **Secrets:** the bearer token is never persisted or included in result
+  JSON.
+- **Agent surface:** `ai.providers`, `ai.probe` and `ai.ask` are engine
+  commands, reachable through `warraqcraft-cli cmd`, the control channel
+  and MCP tools. Requests bound context to 24 KiB and prompts to 64 KiB.
+
+The full harness below remains the design target.
 
 ## Product goals
 
@@ -55,11 +76,16 @@ documented data so users can move between machines.
 - Long tasks checkpoint before mutating project files.
 - Cancellation is cooperative and must leave a recoverable buffer.
 
-Proposed engine commands:
+Implemented provider commands:
+
+- `ai.providers` — list provider presets and defaults
+- `ai.probe` — probe an OpenAI-compatible endpoint without document text
+- `ai.ask` — send one bounded context prompt; token is request-only
+
+Proposed harness commands:
 
 - `ai.task.create`, `ai.task.list`, `ai.task.get`, `ai.task.cancel`
 - `ai.memory.list`, `ai.memory.set`, `ai.memory.delete`
-- `ai.provider.probe`, `ai.provider.set`, `ai.model.list`
 - `ai.plan.preview` — returns proposed commands without executing them
 
 ## System prompt contract
@@ -125,10 +151,12 @@ the client; it does not bypass approvals.
 
 ## Implementation milestones
 
-1. Provider abstraction and settings UI behind `craft-ai`.
-2. Ollama probe/model-list plus manual endpoint configuration.
-3. Durable task queue and memory stores under `.warraqcraft/ai/`.
-4. System prompt registry and command permission matrix.
-5. Approval UI with dry-run command previews.
-6. Ollama guided install/pull automation per platform.
+1. Provider abstraction and settings UI behind `craft-ai` — shipped.
+2. Ollama probe/model-list plus provider presets — shipped.
+3. Ollama service/model setup and platform installer handoff — shipped
+   for detection/pull; explicit install is Windows/macOS, manual status
+   elsewhere.
+4. Durable task queue and memory stores under `.warraqcraft/ai/`.
+5. System prompt registry and command permission matrix.
+6. Approval UI with dry-run command previews.
 7. Agent-facing CLI/MCP task and memory tools.

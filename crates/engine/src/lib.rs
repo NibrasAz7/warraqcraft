@@ -26,6 +26,7 @@ use std::process::Command;
 use serde_json::{json, Value};
 use texparse::{parse_magic, parse_structure, DocStructure};
 
+pub mod ai;
 pub mod history;
 pub mod preview;
 pub mod project;
@@ -325,6 +326,9 @@ impl Session {
             "math.preview" => preview::run(self, params),
             // Document statistics (words, chars, math spans, …).
             "text.stats" => stats::run(self, params),
+            "ai.providers" => Ok(ai::providers()),
+            "ai.probe" => ai::probe(params),
+            "ai.ask" => ai::ask(params),
             "project.snapshot" => history::snapshot(self, params),
             "snapshot.list" => history::list(self),
             "snapshot.read" => history::read(self, params),

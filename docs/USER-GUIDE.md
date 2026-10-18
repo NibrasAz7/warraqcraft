@@ -52,6 +52,27 @@ LuaLaTeX and the bundled Arabic starter templates. The UI display layer
 handles bidirectional text, while the editor keeps the underlying `.tex`
 source in normal logical order.
 
+## AI assist
+
+Open **AI assist**, choose a provider, then either run local setup or
+enter a bring-your-own endpoint:
+
+- **Ollama** fills the local endpoint/model and can start the service and
+  pull the selected model. If the CLI is missing, the explicit install
+  action uses the platform package manager where supported.
+- **OpenAI**, **OpenRouter** or **Custom** only need endpoint/model plus
+  a token. The token stays in memory for the session and is never saved.
+- **Test connection** sends only a `/v1/models` handshake. **Ask** sends
+  a bounded copy of the current document as context.
+
+Agents can use the same provider path headlessly:
+
+```text
+warraqcraft-cli cmd ai.providers
+warraqcraft-cli cmd ai.probe --params '{"provider":"ollama"}'
+warraqcraft-cli cmd ai.ask --params '{"prompt":"Summarise the errors"}'
+```
+
 ## Automation
 
 ```text

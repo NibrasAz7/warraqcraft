@@ -10,21 +10,96 @@
 //! same-shaped stub keeps the call sites unconditional.
 
 #[cfg(not(target_arch = "wasm32"))]
+use std::fs::{self, File};
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::{Read, Seek, SeekFrom};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::process::{Command, Stdio};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc::{channel, Receiver, Sender};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 
 #[cfg(not(target_arch = "wasm32"))]
-use craft_ai::Provider;
+use craft_ai::{Provider, ProviderInfo};
 
 /// Context bytes prepended to a prompt — the selection/document rides
 /// in a fenced block; 24 KiB keeps small local models sane.
 const MAX_CONTEXT: usize = 24 * 1024;
+/// Ollama's OpenAI-compatible endpoint and the lightweight default pull.
+const OLLAMA_ENDPOINT: &str = "http://localhost:11434/v1";
+const OLLAMA_MODEL: &str = "qwen2.5:0.5b";
+const OPENAI_ENDPOINT: &str = "https://api.openai.com/v1";
+const OPENAI_MODEL: &str = "gpt-4o-mini";
+const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1";
+const OPENROUTER_MODEL: &str = "openai/gpt-4o-mini";
 
-/// A finished worker job: an answer for [`AiPanel::ask`] or a probe
-/// label for [`AiPanel::probe`].
+/// Provider presets — the user chooses one name and the matching
+/// endpoint/model are filled in. `Custom` leaves every field untouched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiProviderPreset {
+    Ollama,
+    OpenAi,
+    OpenRouter,
+    Custom,
+}
+
+impl AiProviderPreset {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Ollama => "ollama",
+            Self::OpenAi => "openai",
+            Self::OpenRouter => "openrouter",
+            Self::Custom => "custom",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Self {
+        match key {
+            "ollama" => Self::Ollama,
+            "openai" => Self::OpenAi,
+            "openrouter" => Self::OpenRouter,
+            _ => Self::Custom,
+        }
+    }
+
+    /// Infer an older pref that stored only an endpoint.
+    pub fn from_endpoint(endpoint: &str) -> Self {
+        let e = endpoint.trim().to_ascii_lowercase();
+        if e.contains("localhost:11434") || e.contains("127.0.0.1:11434") {
+            Self::Ollama
+        } else if e.contains("api.openai.com") {
+            Self::OpenAi
+        } else if e.contains("openrouter.ai") {
+            Self::OpenRouter
+        } else {
+            Self::Custom
+        }
+    }
+}
+
+/// A finished worker job: an answer for [`AiPanel::ask`], a probe for
+/// [`AiPanel::probe`], or an Ollama setup/install result.
 #[cfg(not(target_arch = "wasm32"))]
 enum AiReply {
     Answer(Result<String, String>),
-    Probe(Result<String, String>),
+    Probe(Result<ProviderInfo, String>),
+    Setup(Result<SetupReady, SetupFailure>),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct SetupReady {
+    label: String,
+    models: Vec<String>,
+    model: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct SetupFailure {
+    missing: bool,
+    message: String,
 }
 
 /// The AI assist panel: provider fields (persisted by the parent via
@@ -33,18 +108,24 @@ enum AiReply {
 #[cfg(not(target_arch = "wasm32"))]
 pub struct AiPanel {
     pub open: bool,
+    /// Which provider preset owns the endpoint/model fields.
+    pub provider: AiProviderPreset,
     /// Base URL of an OpenAI-compatible endpoint, e.g.
     /// `http://localhost:11434/v1`.
     pub endpoint: String,
     /// Optional bearer token — never echoed into errors or status.
     pub token: String,
     pub model: String,
+    /// Model ids returned by the latest endpoint probe.
+    pub models: Vec<String>,
     pub prompt: String,
     pub response: String,
-    /// A request is in flight — `ask`/`probe` no-op while set.
+    /// A request is in flight — `ask`/`probe`/`setup` no-op while set.
     pub busy: bool,
     /// Whether the last `probe` succeeded, plus its label.
     pub status: Option<(bool, String)>,
+    /// Ollama is absent; the UI can offer an explicit install step.
+    pub needs_install: bool,
     tx: Sender<AiReply>,
     rx: Receiver<AiReply>,
 }
@@ -55,15 +136,42 @@ impl AiPanel {
         let (tx, rx) = channel();
         Self {
             open: false,
-            endpoint: "http://localhost:11434/v1".into(),
+            provider: AiProviderPreset::Ollama,
+            endpoint: OLLAMA_ENDPOINT.into(),
             token: String::new(),
-            model: String::new(),
+            model: OLLAMA_MODEL.into(),
+            models: Vec::new(),
             prompt: String::new(),
             response: String::new(),
             busy: false,
             status: None,
+            needs_install: false,
             tx,
             rx,
+        }
+    }
+
+    /// Switch the provider preset, filling its endpoint/model defaults.
+    /// `Custom` keeps every editable field exactly as typed.
+    pub fn set_provider(&mut self, preset: AiProviderPreset) {
+        self.provider = preset;
+        self.needs_install = false;
+        self.models.clear();
+        match preset {
+            AiProviderPreset::Ollama => {
+                self.endpoint = OLLAMA_ENDPOINT.into();
+                self.model = OLLAMA_MODEL.into();
+                self.token.clear();
+            }
+            AiProviderPreset::OpenAi => {
+                self.endpoint = OPENAI_ENDPOINT.into();
+                self.model = OPENAI_MODEL.into();
+            }
+            AiProviderPreset::OpenRouter => {
+                self.endpoint = OPENROUTER_ENDPOINT.into();
+                self.model = OPENROUTER_MODEL.into();
+            }
+            AiProviderPreset::Custom => {}
         }
     }
 
@@ -105,8 +213,26 @@ impl AiPanel {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let mut provider = provider(endpoint, token, model);
-            let out = provider.test().map(|info| info.label).map_err(|e| e.to_string());
-            let _ = tx.send(AiReply::Probe(out));
+            let _ = tx.send(AiReply::Probe(provider.test().map_err(|e| e.to_string())));
+        });
+    }
+
+    /// Fully automatic local setup: find Ollama (optionally installing
+    /// it first on supported platforms), start its service, pull the
+    /// selected model when absent, then probe `/v1/models`. Everything
+    /// runs on the worker thread; the result lands in `status`.
+    pub fn setup_ollama(&mut self, allow_install: bool) {
+        if self.busy {
+            return;
+        }
+        if self.provider != AiProviderPreset::Ollama {
+            self.set_provider(AiProviderPreset::Ollama);
+        }
+        self.busy = true;
+        let model = self.model.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(AiReply::Setup(setup_ollama_worker(allow_install, model)));
         });
     }
 
@@ -117,8 +243,26 @@ impl AiPanel {
             match reply {
                 AiReply::Answer(Ok(text)) => self.response = text,
                 AiReply::Answer(Err(e)) => self.response = format!("AI: {e}"),
-                AiReply::Probe(Ok(label)) => self.status = Some((true, label)),
+                AiReply::Probe(Ok(info)) => {
+                    self.models = info.models;
+                    if self.model.is_empty() {
+                        if let Some(model) = self.models.first() {
+                            self.model = model.clone();
+                        }
+                    }
+                    self.status = Some((true, info.label));
+                }
                 AiReply::Probe(Err(e)) => self.status = Some((false, e)),
+                AiReply::Setup(Ok(ready)) => {
+                    self.model = ready.model;
+                    self.models = ready.models;
+                    self.needs_install = false;
+                    self.status = Some((true, ready.label));
+                }
+                AiReply::Setup(Err(failure)) => {
+                    self.needs_install = failure.missing;
+                    self.status = Some((false, failure.message));
+                }
             }
         }
     }
@@ -144,18 +288,190 @@ fn provider(endpoint: String, token: String, model: String) -> craft_ai::OpenAiC
     craft_ai::OpenAiCompat::new(endpoint, (!token.is_empty()).then_some(token), model)
 }
 
+/// The setup path used by the Ollama preset: locate (or install) the
+/// CLI, ensure `ollama serve` answers `/v1/models`, pull the model when
+/// absent, then return the final endpoint state.
+#[cfg(not(target_arch = "wasm32"))]
+fn setup_ollama_worker(allow_install: bool, model: String) -> Result<SetupReady, SetupFailure> {
+    let exe = match ollama_program() {
+        Some(exe) => exe,
+        None if allow_install => {
+            install_ollama().map_err(|message| SetupFailure { missing: false, message })?;
+            ollama_program()
+                .ok_or_else(|| SetupFailure { missing: false, message: "Ollama installed but is not on PATH — reopen the app".into() })?
+        }
+        None => {
+            return Err(SetupFailure { missing: true, message: "ollama missing".into() });
+        }
+    };
+
+    let mut info = ensure_ollama_server(&exe, &model).map_err(|message| SetupFailure { missing: false, message })?;
+    let wanted = if model.trim().is_empty() { OLLAMA_MODEL } else { model.trim() };
+    if !info.models.iter().any(|m| m == wanted) {
+        run_capture(Command::new(&exe).arg("pull").arg(wanted), Duration::from_secs(15 * 60))
+            .map_err(|message| SetupFailure { missing: false, message })?;
+        info = probe_ollama(wanted).map_err(|message| SetupFailure { missing: false, message })?;
+    }
+    Ok(SetupReady { label: info.label, models: info.models, model: wanted.to_string() })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn probe_ollama(model: &str) -> Result<ProviderInfo, String> {
+    provider(OLLAMA_ENDPOINT.into(), String::new(), model.into()).test().map_err(|e| e.to_string())
+}
+
+/// Start `ollama serve` when the endpoint is down, then wait briefly
+/// for the OpenAI-compatible handshake to come up.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::disallowed_methods)] // Instant::now — native-only service wait
+fn ensure_ollama_server(exe: &Path, model: &str) -> Result<ProviderInfo, String> {
+    if let Ok(info) = probe_ollama(model) {
+        return Ok(info);
+    }
+    Command::new(exe)
+        .arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("cannot start ollama serve: {e}"))?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut last = "endpoint did not answer".to_string();
+    while Instant::now() < deadline {
+        match probe_ollama(model) {
+            Ok(info) => return Ok(info),
+            Err(e) => last = e,
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    Err(last)
+}
+
+/// Find an installed `ollama`: PATH first, then the standard install
+/// locations a package manager may not have exported to this process.
+#[cfg(not(target_arch = "wasm32"))]
+fn ollama_program() -> Option<PathBuf> {
+    if Command::new("ollama").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        return Some(PathBuf::from("ollama"));
+    }
+    ollama_candidates().into_iter().find(|p| p.is_file())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ollama_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        for var in ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(dir) = std::env::var_os(var) {
+                out.push(PathBuf::from(dir).join("Ollama").join("ollama.exe"));
+            }
+        }
+        if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+            out.push(PathBuf::from(dir).join("Programs").join("Ollama").join("ollama.exe"));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    out.extend(["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"].into_iter().map(PathBuf::from));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    out.extend(["/usr/bin/ollama", "/usr/local/bin/ollama", "/snap/bin/ollama"].into_iter().map(PathBuf::from));
+    out
+}
+
+/// Run the platform's fixed package-manager command. Linux is left as
+/// an explicit manual install: piping a remote script into a shell is
+/// not a default WarraqCraft takes on the user's behalf.
+#[cfg(not(target_arch = "wasm32"))]
+fn install_ollama() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        run_capture(
+            Command::new("winget").args(["install", "-e", "--id", "Ollama.Ollama", "--accept-source-agreements", "--accept-package-agreements"]),
+            Duration::from_secs(5 * 60),
+        )
+        .map(|_| ())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        run_capture(Command::new("brew").args(["install", "--cask", "ollama"]), Duration::from_secs(5 * 60)).map(|_| ())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Err("automatic Ollama install is not supported on this platform — install it from https://ollama.com/download".into())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    {
+        Err("automatic Ollama install is not supported on this platform — install it from https://ollama.com/download".into())
+    }
+}
+
+/// Run a bounded subprocess and keep at most the tail of its output.
+/// Output goes to a temp file rather than a pipe: installers and model
+/// pulls can emit enough progress text to deadlock a piped child that
+/// nobody drains while `try_wait` polls.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::disallowed_methods)] // Instant::now — native-only subprocess deadline
+fn run_capture(command: &mut Command, timeout: Duration) -> Result<String, String> {
+    let log_path = std::env::temp_dir().join(format!("warraqcraft-ai-{}.log", std::process::id()));
+    let stdout = File::create(&log_path).map_err(|e| e.to_string())?;
+    let stderr = stdout.try_clone().map_err(|e| e.to_string())?;
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)).spawn().map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = fs::remove_file(&log_path);
+                return Err("operation timed out".into());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(250)),
+            Err(e) => {
+                let _ = fs::remove_file(&log_path);
+                return Err(e.to_string());
+            }
+        }
+    };
+    let text = read_log_tail(&log_path).unwrap_or_default();
+    let _ = fs::remove_file(&log_path);
+    let msg = text.trim();
+    let detail = if msg.is_empty() { format!("exit status {status}") } else { msg.to_string() };
+    if status.success() {
+        Ok(detail)
+    } else {
+        Err(detail)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_log_tail(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let offset = len.saturating_sub(8192);
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let tail: String = text.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
+    Some(tail)
+}
+
 /// The AI assist panel, wasm stub: same fields, no provider stack —
 /// `ask`/`probe`/`poll` are no-ops so the call sites stay unconditional.
 #[cfg(target_arch = "wasm32")]
 pub struct AiPanel {
     pub open: bool,
+    pub provider: AiProviderPreset,
     pub endpoint: String,
     pub token: String,
     pub model: String,
+    pub models: Vec<String>,
     pub prompt: String,
     pub response: String,
     pub busy: bool,
     pub status: Option<(bool, String)>,
+    pub needs_install: bool,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -163,13 +479,39 @@ impl AiPanel {
     pub fn new() -> Self {
         Self {
             open: false,
-            endpoint: "http://localhost:11434/v1".into(),
+            provider: AiProviderPreset::Ollama,
+            endpoint: OLLAMA_ENDPOINT.into(),
             token: String::new(),
-            model: String::new(),
+            model: OLLAMA_MODEL.into(),
+            models: Vec::new(),
             prompt: String::new(),
             response: String::new(),
             busy: false,
             status: None,
+            needs_install: false,
+        }
+    }
+
+    /// `Custom` preserves typed fields; named presets fill defaults.
+    pub fn set_provider(&mut self, preset: AiProviderPreset) {
+        self.provider = preset;
+        self.needs_install = false;
+        self.models.clear();
+        match preset {
+            AiProviderPreset::Ollama => {
+                self.endpoint = OLLAMA_ENDPOINT.into();
+                self.model = OLLAMA_MODEL.into();
+                self.token.clear();
+            }
+            AiProviderPreset::OpenAi => {
+                self.endpoint = OPENAI_ENDPOINT.into();
+                self.model = OPENAI_MODEL.into();
+            }
+            AiProviderPreset::OpenRouter => {
+                self.endpoint = OPENROUTER_ENDPOINT.into();
+                self.model = OPENROUTER_MODEL.into();
+            }
+            AiProviderPreset::Custom => {}
         }
     }
 
@@ -177,6 +519,8 @@ impl AiPanel {
     pub fn ask(&mut self, _context: &str) {}
 
     pub fn probe(&mut self) {}
+
+    pub fn setup_ollama(&mut self, _allow_install: bool) {}
 
     pub fn poll(&mut self) {}
 
@@ -281,8 +625,44 @@ mod tests {
         panel.poll();
         assert_eq!(panel.response, "AI: boom");
 
-        let _ = panel.tx.send(AiReply::Probe(Ok("reachable: http://x".into())));
+        let _ = panel.tx.send(AiReply::Probe(Ok(ProviderInfo { label: "reachable: http://x".into(), models: vec!["m1".into()] })));
         panel.poll();
         assert_eq!(panel.status, Some((true, "reachable: http://x".to_string())));
+        assert_eq!(panel.models, vec!["m1"]);
+    }
+
+    #[test]
+    fn provider_preset_round_trip_and_infer() {
+        for preset in [AiProviderPreset::Ollama, AiProviderPreset::OpenAi, AiProviderPreset::OpenRouter, AiProviderPreset::Custom] {
+            assert_eq!(AiProviderPreset::from_key(preset.key()), preset);
+        }
+        assert_eq!(AiProviderPreset::from_endpoint("http://localhost:11434/v1"), AiProviderPreset::Ollama);
+        assert_eq!(AiProviderPreset::from_endpoint("https://api.openai.com/v1"), AiProviderPreset::OpenAi);
+        assert_eq!(AiProviderPreset::from_endpoint("https://openrouter.ai/api/v1"), AiProviderPreset::OpenRouter);
+        assert_eq!(AiProviderPreset::from_endpoint("https://example.test/v1"), AiProviderPreset::Custom);
+    }
+
+    #[test]
+    fn provider_preset_populates_defaults() {
+        let mut panel = AiPanel::new();
+        panel.set_provider(AiProviderPreset::OpenAi);
+        assert_eq!(panel.endpoint, OPENAI_ENDPOINT);
+        assert_eq!(panel.model, OPENAI_MODEL);
+        panel.token = "secret".into();
+        panel.set_provider(AiProviderPreset::Ollama);
+        assert_eq!(panel.endpoint, OLLAMA_ENDPOINT);
+        assert_eq!(panel.model, OLLAMA_MODEL);
+        assert!(panel.token.is_empty(), "local preset does not keep a cloud token");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn setup_missing_marks_install_needed() {
+        let mut panel = AiPanel::new();
+        panel.busy = true;
+        let _ = panel.tx.send(AiReply::Setup(Err(SetupFailure { missing: true, message: "ollama missing".into() })));
+        panel.poll();
+        assert!(panel.needs_install);
+        assert!(!panel.busy);
     }
 }

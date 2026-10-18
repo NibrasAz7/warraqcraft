@@ -50,7 +50,7 @@ const INSTRUCTIONS: &str =
 with source_set, then run the tools: source_get, structure_get and magic_get inspect the buffer, document_compile typesets \
 it with tectonic or a system TeX engine, math_preview renders a math fragment, text_stats reports document statistics, \
 template_* create documents from the shipped gallery, user_tool_* run configured external tools, \
-project_structure merges the outline across the input/include graph, and \
+project_structure merges the outline across the input/include graph, ai_probe/ai_ask call a configured OpenAI-compatible provider without storing its token, and \
 project_snapshot/snapshot_* keep local file history. The open document is also readable as resources \
 warraqcraft://doc/source (text/plain), warraqcraft://doc/structure and warraqcraft://doc/stats (application/json) — read-only \
 snapshots of the live buffer.";
@@ -76,6 +76,9 @@ const TOOL_COMMANDS: &[(&str, &str)] = &[
     ("template_import", "template.import"),
     ("project_graph", "project.graph"),
     ("project_structure", "project.structure"),
+    ("ai_providers", "ai.providers"),
+    ("ai_probe", "ai.probe"),
+    ("ai_ask", "ai.ask"),
     ("math_preview", "math.preview"),
     ("text_stats", "text.stats"),
     ("project_snapshot", "project.snapshot"),
@@ -438,6 +441,35 @@ fn tool_list() -> Vec<Value> {
             true,
             false,
         ),
+        tool("ai_providers", "List the supported AI provider presets and their default endpoints/models.", json!({}), &[], true, false),
+        tool(
+            "ai_probe",
+            "Probe an OpenAI-compatible /v1 provider handshake. Sends no document text; token is a request parameter and is never persisted.",
+            json!({
+                "provider": s("Provider preset: ollama, openai, openrouter, or custom (default ollama)."),
+                "endpoint": s("OpenAI-compatible endpoint override."),
+                "model": s("Model id override."),
+                "token": s("Optional bearer token for this request only."),
+            }),
+            &[],
+            true,
+            false,
+        ),
+        tool(
+            "ai_ask",
+            "Ask an OpenAI-compatible provider with bounded LaTeX context. Token is a request parameter and is never persisted.",
+            json!({
+                "provider": s("Provider preset: ollama, openai, openrouter, or custom (default ollama)."),
+                "endpoint": s("OpenAI-compatible endpoint override."),
+                "model": s("Model id override."),
+                "token": s("Optional bearer token for this request only."),
+                "context": s("Optional LaTeX context, capped at 24 KiB."),
+                "prompt": s("Question or instruction for the model."),
+            }),
+            &["prompt"],
+            true,
+            false,
+        ),
         tool(
             "math_preview",
             "Compile a LaTeX math fragment to a preview PDF under .warraqcraft/preview/.",
@@ -536,7 +568,7 @@ mod tests {
         let mut s = McpServer::new();
         let r = rpc(&mut s, &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})).unwrap();
         let tools = r["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 24);
+        assert_eq!(tools.len(), 27);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for (name, _) in TOOL_COMMANDS {
             assert!(names.contains(name), "tools/list missing {name}");

@@ -3964,6 +3964,7 @@ dependencies = [
 name = "warraqcraft-engine"
 version = "0.1.0"
 dependencies = [
+ "craft-ai",
  "craft-atomic",
  "serde_json",
  "texparse",

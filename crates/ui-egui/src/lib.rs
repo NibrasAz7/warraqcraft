@@ -201,6 +201,8 @@ struct WarraqPrefs {
     /// — it stays in-memory for the session.
     ai_endpoint: String,
     ai_model: String,
+    /// Provider preset (`ollama`, `openai`, `openrouter`, `custom`).
+    ai_provider: String,
     /// UI language code — see [`lang::Lang::from_code`].
     language: String,
     /// Last document path and dirty-buffer autosave. Only dirty text is
@@ -225,6 +227,7 @@ impl Default for WarraqPrefs {
             page_mode: "scroll".into(),
             ai_endpoint: String::new(),
             ai_model: String::new(),
+            ai_provider: String::new(),
             language: "en".into(),
             last_file: String::new(),
             autosave_source: String::new(),
@@ -614,11 +617,23 @@ impl WarraqApp {
         app.show_logs = p.logs;
         app.page_mode = PageMode::from_pref(&p.page_mode);
         app.spell.set_enabled(p.spellcheck);
-        if !p.ai_endpoint.is_empty() {
-            app.ai.endpoint = p.ai_endpoint.clone();
-        }
-        if !p.ai_model.is_empty() {
-            app.ai.model = p.ai_model.clone();
+        let ai_preset = if !p.ai_provider.is_empty() {
+            ai::AiProviderPreset::from_key(&p.ai_provider)
+        } else if !p.ai_endpoint.is_empty() {
+            ai::AiProviderPreset::from_endpoint(&p.ai_endpoint)
+        } else {
+            ai::AiProviderPreset::Ollama
+        };
+        if p.ai_endpoint.is_empty() && p.ai_model.is_empty() {
+            app.ai.set_provider(ai_preset);
+        } else {
+            app.ai.provider = ai_preset;
+            if !p.ai_endpoint.is_empty() {
+                app.ai.endpoint = p.ai_endpoint.clone();
+            }
+            if !p.ai_model.is_empty() {
+                app.ai.model = p.ai_model.clone();
+            }
         }
         app.session = Session::with_source(DEFAULT_DOC.to_string());
         #[cfg(not(target_arch = "wasm32"))]
@@ -3380,29 +3395,70 @@ impl WarraqApp {
         let mut open = self.ai.open;
         let mut ask = false;
         let mut probe = false;
+        let mut setup = false;
+        let mut install = false;
         egui::Window::new(lang::view(self.s().ai_title))
             .collapsible(false)
             .resizable(true)
-            .default_size([420.0, 340.0])
+            .default_size([460.0, 390.0])
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .open(&mut open)
             .show(ctx, |ui| {
                 let s = self.s();
                 egui::Grid::new("ai_cfg").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                    ui.label(egui::RichText::new(lang::view(s.ai_provider)).size(11.0).color(theme::pal().muted));
+                    let mut provider = self.ai.provider;
+                    egui::ComboBox::from_id_salt("ai-provider")
+                        .selected_text(match provider {
+                            ai::AiProviderPreset::Ollama => "Ollama".to_string(),
+                            ai::AiProviderPreset::OpenAi => "OpenAI".to_string(),
+                            ai::AiProviderPreset::OpenRouter => "OpenRouter".to_string(),
+                            ai::AiProviderPreset::Custom => lang::view(s.ai_custom).into_owned(),
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut provider, ai::AiProviderPreset::Ollama, "Ollama");
+                            ui.selectable_value(&mut provider, ai::AiProviderPreset::OpenAi, "OpenAI");
+                            ui.selectable_value(&mut provider, ai::AiProviderPreset::OpenRouter, "OpenRouter");
+                            ui.selectable_value(&mut provider, ai::AiProviderPreset::Custom, lang::view(s.ai_custom));
+                        });
+                    if provider != self.ai.provider {
+                        self.ai.set_provider(provider);
+                    }
+                    ui.end_row();
                     ui.label(egui::RichText::new(lang::view(s.ai_endpoint)).size(11.0).color(theme::pal().muted));
                     ui.add(egui::TextEdit::singleline(&mut self.ai.endpoint).hint_text("http://localhost:11434/v1").desired_width(300.0));
                     ui.end_row();
                     ui.label(egui::RichText::new(lang::view(s.ai_model)).size(11.0).color(theme::pal().muted));
-                    ui.add(egui::TextEdit::singleline(&mut self.ai.model).hint_text("llama3.2, gpt-4o-mini, …").desired_width(300.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.ai.model).hint_text("qwen2.5:0.5b, gpt-4o-mini, …").desired_width(300.0));
                     ui.end_row();
+                    if !self.ai.models.is_empty() {
+                        ui.label(egui::RichText::new(lang::view(s.ai_models)).size(11.0).color(theme::pal().muted));
+                        let models = self.ai.models.clone();
+                        egui::ComboBox::from_id_salt("ai-models").selected_text(&self.ai.model).show_ui(ui, |ui| {
+                            for model in models {
+                                ui.selectable_value(&mut self.ai.model, model.clone(), model);
+                            }
+                        });
+                        ui.end_row();
+                    }
                     ui.label(egui::RichText::new(lang::view(s.ai_token)).size(11.0).color(theme::pal().muted));
-                    ui.add(egui::TextEdit::singleline(&mut self.ai.token).password(true).hint_text(lang::view(s.ai_token_hint)).desired_width(300.0));
+                    ui.add_enabled(
+                        self.ai.provider != ai::AiProviderPreset::Ollama,
+                        egui::TextEdit::singleline(&mut self.ai.token).password(true).hint_text(lang::view(s.ai_token_hint)).desired_width(300.0),
+                    );
                     ui.end_row();
                 });
-                ui.horizontal(|ui| {
-                    probe = ui.button(lang::view(s.ai_test)).clicked();
+                ui.horizontal_wrapped(|ui| {
+                    probe = ui.add_enabled(!self.ai.busy, egui::Button::new(lang::view(s.ai_test))).clicked();
+                    if self.ai.provider == ai::AiProviderPreset::Ollama {
+                        setup = ui.add_enabled(!self.ai.busy, egui::Button::new(lang::view(s.ai_setup))).clicked();
+                        if self.ai.needs_install {
+                            install = ui.add_enabled(!self.ai.busy, egui::Button::new(lang::view(s.ai_install))).clicked();
+                        }
+                    }
                     if let Some((ok, label)) = &self.ai.status {
-                        ui.label(egui::RichText::new(label).size(10.5).color(if *ok { theme::pal().accent_dim } else { theme::pal().error }));
+                        let text = if self.ai.needs_install { lang::view(s.ai_missing).into_owned() } else { label.clone() };
+                        ui.label(egui::RichText::new(text).size(10.5).color(if *ok { theme::pal().accent_dim } else { theme::pal().error }));
                     }
                 });
                 ui.separator();
@@ -3426,6 +3482,12 @@ impl WarraqApp {
         self.ai.open = open;
         if probe {
             self.ai.probe();
+        }
+        if setup {
+            self.ai.setup_ollama(false);
+        }
+        if install {
+            self.ai.setup_ollama(true);
         }
         if ask {
             self.ai.ask(self.session.source());
@@ -4045,7 +4107,7 @@ impl eframe::App for WarraqApp {
         let engine = self.engine_sel.and_then(|i| self.engines.get(i).cloned()).unwrap_or_default();
         let (dark, auto, zoom, outline, logs, spell, pm) =
             (theme::is_dark(), self.autocompile, self.zoom.pref(), self.outline_open, self.show_logs, self.spell.enabled(), self.page_mode.pref());
-        let (ai_ep, ai_model) = (self.ai.endpoint.clone(), self.ai.model.clone());
+        let (ai_ep, ai_model, ai_provider) = (self.ai.endpoint.clone(), self.ai.model.clone(), self.ai.provider.key());
         let last_file = self.session.path().map(|p| p.display().to_string()).unwrap_or_default();
         let autosave_source = if self.session.dirty() { self.session.source().to_string() } else { String::new() };
         let (autosave_line, autosave_col) = self.cursor_lc;
@@ -4061,6 +4123,7 @@ impl eframe::App for WarraqApp {
             p.page_mode = pm.into();
             p.ai_endpoint = ai_ep.clone();
             p.ai_model = ai_model.clone();
+            p.ai_provider = ai_provider.into();
             p.last_file = last_file.clone();
             p.autosave_source = autosave_source.clone();
             p.autosave_dirty = autosave_dirty;
