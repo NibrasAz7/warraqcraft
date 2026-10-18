@@ -48,6 +48,40 @@ const TREE_SCAN_SECS: f64 = 1.5;
 /// Commands whose `{…}` arg completes project-wide `\label`s (M3) —
 /// mirrors `texparse`'s REFS scan set.
 const REF_CMDS: &[&str] = &["ref", "eqref", "pageref", "autoref", "cref", "Cref", "vref"];
+/// Commands whose `{…}` arg completes bibliography keys — BibTeX and the
+/// common biblatex variants.
+const CITE_CMDS: &[&str] = &["cite", "parencite", "textcite", "citealp", "citeauthor", "citeyear", "nocite"];
+/// Symbol-palette commands, grouped like the palettes in desktop TeX editors.
+const SYMBOL_GREEK: &[&str] = &[
+    "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "pi", "rho", "sigma", "tau",
+    "upsilon", "phi", "chi", "psi", "omega", "Gamma", "Delta", "Theta", "Lambda", "Xi", "Pi", "Sigma", "Phi", "Psi", "Omega",
+];
+const SYMBOL_MATH: &[&str] = &[
+    "pm", "mp", "times", "div", "cdot", "ast", "circ", "oplus", "ominus", "otimes", "sqrt{}", "frac{}{}", "sum", "prod", "int", "oint", "partial",
+    "nabla", "infty", "aleph", "hbar", "ell", "emptyset",
+];
+const SYMBOL_RELATIONS: &[&str] = &[
+    "leq", "geq", "neq", "approx", "equiv", "propto", "sim", "simeq", "cong", "ll", "gg", "in", "notin", "subset", "supset", "subseteq", "supseteq",
+    "cup", "cap", "forall", "exists", "nexists", "vdash", "models",
+];
+const SYMBOL_ARROWS: &[&str] = &[
+    "leftarrow",
+    "rightarrow",
+    "leftrightarrow",
+    "Leftarrow",
+    "Rightarrow",
+    "Leftrightarrow",
+    "mapsto",
+    "uparrow",
+    "downarrow",
+    "updownarrow",
+    "longrightarrow",
+    "longleftarrow",
+    "Longrightarrow",
+    "Longleftarrow",
+    "hookrightarrow",
+    "to",
+];
 
 /// A rasterized page plus its PDF size in points (top-left origin) —
 /// SyncTeX speaks points, so we need the pt dimensions to map clicks.
@@ -169,6 +203,13 @@ struct WarraqPrefs {
     ai_model: String,
     /// UI language code — see [`lang::Lang::from_code`].
     language: String,
+    /// Last document path and dirty-buffer autosave. Only dirty text is
+    /// persisted; clean buffers recover by reopening `last_file`.
+    last_file: String,
+    autosave_source: String,
+    autosave_dirty: bool,
+    autosave_line: usize,
+    autosave_col: usize,
 }
 
 impl Default for WarraqPrefs {
@@ -185,6 +226,11 @@ impl Default for WarraqPrefs {
             ai_endpoint: String::new(),
             ai_model: String::new(),
             language: "en".into(),
+            last_file: String::new(),
+            autosave_source: String::new(),
+            autosave_dirty: false,
+            autosave_line: 0,
+            autosave_col: 0,
         }
     }
 }
@@ -192,7 +238,7 @@ impl Default for WarraqPrefs {
 #[cfg(not(target_arch = "wasm32"))]
 impl craft_settings::Settings for WarraqPrefs {
     const APP_ID: &'static str = "warraqcraft";
-    const SCHEMA_VERSION: u32 = 1;
+    const SCHEMA_VERSION: u32 = 2;
 
     fn migrate(_from: u32, _doc: &mut craft_settings::DocumentMut) -> Result<(), craft_settings::MigrateError> {
         Ok(())
@@ -303,6 +349,9 @@ struct ProjFile {
     /// `\label`s defined here — used to tag `\ref{}` completion items
     /// with their defining file.
     labels: Vec<String>,
+    /// `\bibliography` targets declared here — resolved to feed inline
+    /// `\cite{}` key completion.
+    bibliographies: Vec<String>,
 }
 
 /// A finished user-tool run (engine `user_tool.run` result).
@@ -345,6 +394,10 @@ pub struct WarraqApp {
     proj_files: Vec<ProjFile>,
     /// Union of `\label`s across the project (plus the live buffer's).
     proj_labels: Vec<String>,
+    /// Bibliography entries from the project's declared `.bib` files —
+    /// feeds inline `\cite{}` completion.
+    #[cfg(not(target_arch = "wasm32"))]
+    proj_bibs: Vec<cite::CiteEntry>,
     /// Unresolved file deps the scan saw (missing `\input`, graphics, bibs).
     proj_missing: usize,
     proj_scanned_at: f64,
@@ -440,8 +493,12 @@ pub struct WarraqApp {
     ai: ai::AiPanel,
     /// Document-statistics window.
     stats_open: bool,
+    /// Preferences window.
+    settings_open: bool,
     /// Keyboard-shortcuts help window.
     shortcuts_open: bool,
+    /// Categorized LaTeX-symbol palette window.
+    symbols_open: bool,
     /// Cached worker-compiled previews for the math under the caret.
     mathprev: mathprev::MathPreview,
     /// Print job result channel (submitted on a worker — `submit`
@@ -483,6 +540,8 @@ impl WarraqApp {
             main_file: None,
             proj_files: Vec::new(),
             proj_labels: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            proj_bibs: Vec::new(),
             proj_missing: 0,
             proj_scanned_at: f64::NEG_INFINITY,
             outline_open: true,
@@ -538,7 +597,9 @@ impl WarraqApp {
             prev_src: String::new(),
             ai: ai::AiPanel::new(),
             stats_open: false,
+            settings_open: false,
             shortcuts_open: false,
+            symbols_open: false,
             mathprev: mathprev::MathPreview::new(),
             #[cfg(not(target_arch = "wasm32"))]
             print_rx: None,
@@ -554,10 +615,10 @@ impl WarraqApp {
         app.page_mode = PageMode::from_pref(&p.page_mode);
         app.spell.set_enabled(p.spellcheck);
         if !p.ai_endpoint.is_empty() {
-            app.ai.endpoint = p.ai_endpoint;
+            app.ai.endpoint = p.ai_endpoint.clone();
         }
         if !p.ai_model.is_empty() {
-            app.ai.model = p.ai_model;
+            app.ai.model = p.ai_model.clone();
         }
         app.session = Session::with_source(DEFAULT_DOC.to_string());
         #[cfg(not(target_arch = "wasm32"))]
@@ -567,9 +628,32 @@ impl WarraqApp {
         }
         match file {
             Some(p) => app.open_path(p),
-            None => app.reparse(),
+            None => app.restore_or_default(&p),
         }
         app
+    }
+
+    /// Restore the last buffer or start with the bundled sample. Dirty text
+    /// is persisted separately from the path so an unsaved document survives
+    /// a normal close without inventing an on-disk filename.
+    fn restore_or_default(&mut self, p: &WarraqPrefs) {
+        let last = (!p.last_file.is_empty()).then(|| PathBuf::from(&p.last_file));
+        if p.autosave_dirty && !p.autosave_source.is_empty() {
+            let mut session = Session::new();
+            if let Some(path) = last.as_deref().filter(|path| path.is_file()) {
+                let _ = session.open(path);
+            }
+            session.set_source(p.autosave_source.clone());
+            self.session = session;
+            self.reparse();
+            self.goto = Some(offset_of_line_col(self.session.source(), p.autosave_line, p.autosave_col));
+            self.status = self.s().status_recovered.into();
+        } else if let Some(path) = last.filter(|path| path.is_file()) {
+            self.open_path(path);
+            self.goto = Some(offset_of_line_col(self.session.source(), p.autosave_line, p.autosave_col));
+        } else {
+            self.reparse();
+        }
     }
 
     /// Attach a started control channel (`warraqcraft --control FILE`).
@@ -592,11 +676,11 @@ impl WarraqApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn print_pdf(&mut self) {
         if self.print_rx.is_some() {
-            self.status = "print already in flight…".into();
+            self.status = self.s().status_print_busy.into();
             return;
         }
         let Some(pdf) = self.pdf_path.clone() else {
-            self.status = "compile first — no PDF to print".into();
+            self.status = self.s().status_no_pdf.into();
             return;
         };
         let title = pdf.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "warraqcraft".into());
@@ -608,7 +692,22 @@ impl WarraqApp {
             let _ = tx.send(res);
         });
         self.print_rx = Some(rx);
-        self.status = "printing…".into();
+        self.status = self.s().status_printing.into();
+    }
+
+    /// Save a copy of the last compiled PDF where the user chooses.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn export_pdf(&mut self) {
+        let Some(pdf) = self.pdf_path.clone() else {
+            self.status = self.s().status_no_pdf.into();
+            return;
+        };
+        let file_name = pdf.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "document.pdf".into());
+        let Some(dest) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).set_file_name(&file_name).save_file() else { return };
+        self.status = match std::fs::copy(&pdf, &dest) {
+            Ok(_) => lang::fmt(self.s().status_exported, &[("path", &dest.display().to_string())]),
+            Err(e) => lang::fmt(self.s().status_failed, &[("context", "export"), ("error", &e.to_string())]),
+        };
     }
 
     /// Drain a finished print job into the status line.
@@ -618,16 +717,16 @@ impl WarraqApp {
         let Some(rx) = &self.print_rx else { return };
         match rx.try_recv() {
             Ok(Ok(job)) => {
-                self.status = format!("sent to printer — {job}");
+                self.status = lang::fmt(self.s().status_printed, &[("job", &job)]);
                 self.print_rx = None;
             }
             Ok(Err(e)) => {
-                self.status = format!("print failed: {e}");
+                self.status = lang::fmt(self.s().status_print_failed, &[("error", &e)]);
                 self.print_rx = None;
             }
             Err(Empty) => {}
             Err(Disconnected) => {
-                self.status = "print worker died".into();
+                self.status = self.s().status_print_dead.into();
                 self.print_rx = None;
             }
         }
@@ -638,9 +737,12 @@ impl WarraqApp {
         // auto-saved first; an untitled dirty buffer refuses to switch.
         if self.session.dirty() && self.session.path() != Some(path.as_path()) {
             if self.session.path().is_some() {
-                let _ = self.session.save();
+                if let Err(e) = self.session.save() {
+                    self.status = lang::fmt(self.s().status_failed, &[("context", self.s().save), ("error", &e.to_string())]);
+                    return;
+                }
             } else {
-                self.status = "unsaved buffer — save it before switching files".into();
+                self.status = self.s().status_unsaved_switch.into();
                 return;
             }
         }
@@ -662,8 +764,93 @@ impl WarraqApp {
                 self.proj_scanned_at = f64::NEG_INFINITY;
                 self.load_tools();
             }
-            Err(e) => self.status = format!("cannot open {}: {e}", path.display()),
+            Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", &path.display().to_string()), ("error", &e.to_string())]),
         }
+    }
+
+    /// Create an untitled buffer. `document.new` keeps the same command
+    /// contract for UI, CLI, control and MCP callers.
+    fn new_untitled(&mut self) {
+        if self.session.dirty() {
+            if self.session.path().is_some() {
+                if let Err(e) = self.session.save() {
+                    self.status = lang::fmt(self.s().status_failed, &[("context", self.s().save), ("error", &e.to_string())]);
+                    return;
+                }
+            } else {
+                self.status = self.s().status_unsaved_new.into();
+                return;
+            }
+        }
+        match self.session.execute("document.new", &serde_json::json!({"text": DEFAULT_DOC})) {
+            Ok(_) => {
+                self.pages.clear();
+                self.page_pts.clear();
+                self.pdf_path = None;
+                self.report = None;
+                self.page_idx = 0;
+                self.flash = None;
+                self.folded.clear();
+                self.mirrors = None;
+                self.prev_src.clear();
+                self.src_stamp = self.src_stamp.wrapping_add(1);
+                self.rebuild_marks();
+                self.reparse();
+                self.proj_scanned_at = f64::NEG_INFINITY;
+                self.load_tools();
+                self.status = self.s().status_untitled.into();
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    /// Insert or wrap LaTeX at the editor caret. Selection ranges come from
+    /// egui's persisted TextEdit state; in folded mode `cursor_lc` is the
+    /// source-coordinate fallback.
+    fn insert_latex(&mut self, ctx: &egui::Context, before: &str, after: &str, caret_back: usize) {
+        let mut src = self.session.source().to_string();
+        let selection = if self.folded.is_empty() {
+            self.editor_id
+                .and_then(|id| egui::text_edit::TextEditState::load(ctx, id))
+                .and_then(|st| st.cursor.char_range())
+                .map(|r| (r.primary.index.0.min(r.secondary.index.0), r.primary.index.0.max(r.secondary.index.0)))
+                .filter(|(a, b)| a != b)
+        } else {
+            None
+        };
+        let caret_ci = selection
+            .map(|(a, _)| a)
+            .or_else(|| {
+                if self.folded.is_empty() {
+                    self.editor_id
+                        .and_then(|id| egui::text_edit::TextEditState::load(ctx, id))
+                        .and_then(|st| st.cursor.char_range())
+                        .map(|r| r.primary.index.0)
+                } else {
+                    Some(char_index_of_lc(&src, self.cursor_lc.0, self.cursor_lc.1))
+                }
+            })
+            .unwrap_or(0)
+            .min(src.chars().count());
+        let caret_b = byte_of_char(&src, caret_ci);
+        let goto = if let Some((_, end)) = selection {
+            let end_b = byte_of_char(&src, end.min(src.chars().count()));
+            let selected = src.get(caret_b..end_b).unwrap_or_default().to_string();
+            let insert = format!("{before}{selected}{after}");
+            src.replace_range(caret_b..end_b, &insert);
+            caret_b + insert.len()
+        } else {
+            let insert = format!("{before}{after}");
+            src.insert_str(caret_b, &insert);
+            caret_b + insert.len().saturating_sub(caret_back)
+        };
+        self.mirrors = None;
+        self.session.set_source(src);
+        self.src_stamp = self.src_stamp.wrapping_add(1);
+        self.reparse();
+        self.folded.clear();
+        self.goto = Some(goto);
+        self.last_edit = ctx.input(|i| i.time);
     }
 
     fn save(&mut self) {
@@ -672,8 +859,8 @@ impl WarraqApp {
             return;
         }
         match self.session.save() {
-            Ok(()) => self.status = format!("saved {}", self.path_display()),
-            Err(e) => self.status = e.to_string(),
+            Ok(()) => self.status = lang::fmt(self.s().status_saved, &[("path", &self.path_display())]),
+            Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", self.s().save), ("error", &e.to_string())]),
         }
     }
 
@@ -715,20 +902,20 @@ impl WarraqApp {
     fn save_as(&mut self) {
         if let Some(p) = rfd::FileDialog::new().add_filter("LaTeX", &["tex"]).save_file() {
             match self.session.save_as(&p) {
-                Ok(()) => self.status = format!("saved {}", p.display()),
-                Err(e) => self.status = e.to_string(),
+                Ok(()) => self.status = lang::fmt(self.s().status_saved, &[("path", &p.display().to_string())]),
+                Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", self.s().save), ("error", &e.to_string())]),
             }
         }
     }
 
     #[cfg(target_arch = "wasm32")]
     fn open_dialog(&mut self) {
-        self.status = "open is not available on the web build".into();
+        self.status = lang::fmt(self.s().status_unavailable, &[("action", self.s().open_file)]);
     }
 
     #[cfg(target_arch = "wasm32")]
     fn save_as(&mut self) {
-        self.status = "save-as is not available on the web build".into();
+        self.status = lang::fmt(self.s().status_unavailable, &[("action", self.s().save)]);
     }
 
     /// Load project user tools from `warraqcraft-tools.json` next to the
@@ -745,12 +932,12 @@ impl WarraqApp {
                 Ok(_) => {
                     let n = self.session.user_tools().len();
                     if n > 0 {
-                        self.status = format!("{n} user tool{} from warraqcraft-tools.json", if n == 1 { "" } else { "s" });
+                        self.status = lang::fmt(self.s().status_tools_loaded, &[("n", &n.to_string())]);
                     }
                 }
-                Err(e) => self.status = format!("warraqcraft-tools.json: {e}"),
+                Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", "warraqcraft-tools.json"), ("error", &e.to_string())]),
             },
-            Err(e) => self.status = format!("warraqcraft-tools.json: {e}"),
+            Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", "warraqcraft-tools.json"), ("error", &e.to_string())]),
         }
     }
 
@@ -764,7 +951,7 @@ impl WarraqApp {
     fn start_tool(&mut self, name: String) {
         let tools: Vec<warraqcraft_engine::UserTool> = self.session.user_tools().to_vec();
         let path = self.session.path().map(Path::to_path_buf);
-        self.status = format!("running {name}…");
+        self.status = lang::fmt(self.s().status_running_tool, &[("name", &name)]);
         let (tx, rx) = std::sync::mpsc::channel();
         self.tool_rx = Some(rx);
         std::thread::spawn(move || {
@@ -790,18 +977,22 @@ impl WarraqApp {
                 let name = v["name"].as_str().unwrap_or("tool");
                 let tail = v["stdout"].as_str().unwrap_or("").lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string());
                 self.status = match (timed_out, tail) {
-                    (true, _) => format!("{name} — timed out"),
-                    (false, Some(l)) => format!("{name} — {status}: {l}"),
-                    (false, None) => format!("{name} — {status}"),
+                    (true, _) => lang::fmt(self.s().status_tool_timeout, &[("name", name)]),
+                    (false, tail) => {
+                        lang::fmt(self.s().status_tool_done, &[("name", name), ("status", &status), ("tail", &tail.unwrap_or_default())])
+                    }
                 };
                 self.tool_rx = None;
             }
             Ok(Err(e)) => {
-                self.status = format!("user tool failed: {e}");
+                self.status = lang::fmt(self.s().status_tool_failed, &[("error", &e)]);
                 self.tool_rx = None;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.tool_rx = None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.status = self.s().status_tool_dead.into();
+                self.tool_rx = None;
+            }
         }
     }
 
@@ -821,6 +1012,47 @@ impl WarraqApp {
         // The ≤64 chars before the caret — enough for `\begin{prefix`.
         let back_start = src.char_indices().nth(ci.saturating_sub(64)).map(|(b, _)| b).unwrap_or(0);
         let back = src.get(back_start..byte_of_char(src, ci)).unwrap_or("");
+        // `\cite{`-family inside an open arg — complete bibliography keys
+        // from the project's declared `.bib` files. A comma starts the next
+        // key in a multi-cite list.
+        let cite_prefix = CITE_CMDS
+            .iter()
+            .filter_map(|c| {
+                let anchor = format!("\\{c}{{");
+                back.rfind(&anchor).map(|p| p + anchor.len())
+            })
+            .max()
+            .and_then(|arg_start| {
+                let arg = back.get(arg_start..)?;
+                let w = arg.rsplit(',').next()?;
+                (w.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-' | '.' | '/'))).then(|| (ci - w.len(), w.to_string()))
+            });
+        if let Some((start, w)) = cite_prefix {
+            #[cfg(not(target_arch = "wasm32"))]
+            let items: Vec<CompletionItem> = self
+                .proj_bibs
+                .iter()
+                .filter(|e| e.key.starts_with(w.as_str()))
+                .take(8)
+                .map(|e| CompletionItem {
+                    name: e.key.clone(),
+                    sig: e.year.clone(),
+                    meta: format!("{} — {}", e.author, e.file),
+                    insert: e.key.clone(),
+                    caret_back: 0,
+                })
+                .collect();
+            #[cfg(target_arch = "wasm32")]
+            let items: Vec<CompletionItem> = Vec::new();
+            if items.is_empty() {
+                self.complete = None;
+            } else {
+                let sel = self.complete.as_ref().map(|c| c.sel.min(items.len() - 1)).unwrap_or(0);
+                self.complete = Some(Completion { start, end: ci, env: true, items, sel });
+            }
+            return;
+        }
+
         // `\ref{`-family inside an open arg — complete project labels.
         // The `}` in a closed arg fails the charset check, so this only
         // fires while the brace is still open.
@@ -955,16 +1187,16 @@ impl WarraqApp {
             self.save_as();
         }
         let Some(path) = self.session.path().map(Path::to_path_buf) else {
-            self.status = "save the document to compile it".into();
+            self.status = self.s().status_compile_no_save.into();
             return;
         };
         if let Err(e) = self.session.save() {
-            self.status = format!("cannot save before compile: {e}");
+            self.status = lang::fmt(self.s().status_save_before_compile, &[("error", &e.to_string())]);
             return;
         }
         self.compiling = true;
         self.compiled_edit = self.last_edit;
-        self.status = "compiling…".into();
+        self.status = self.s().status_compiling.into();
         let engine = self.engine_sel.and_then(|i| self.engines.get(i).cloned());
         let (tx, rx) = std::sync::mpsc::channel();
         self.compile_rx = Some(rx);
@@ -975,7 +1207,7 @@ impl WarraqApp {
 
     #[cfg(target_arch = "wasm32")]
     fn start_compile(&mut self) {
-        self.status = "compile is not available on the web build".into();
+        self.status = lang::fmt(self.s().status_unavailable, &[("action", self.s().recompile)]);
     }
 
     /// Collect a finished compile: store the report and build textures.
@@ -984,10 +1216,12 @@ impl WarraqApp {
         let Some(rx) = &self.compile_rx else { return };
         match rx.try_recv() {
             Ok(Ok((report, images))) => {
+                let pages = report.pages.unwrap_or(0).to_string();
+                let errors = report.errors.len().to_string();
                 self.status = match (report.pdf.is_some(), report.errors.len()) {
-                    (true, 0) => format!("{} — {} page(s)", report.engine, report.pages.unwrap_or(0)),
-                    (true, n) => format!("{} — {} page(s), {n} error(s)", report.engine, report.pages.unwrap_or(0)),
-                    (false, _) => format!("{} failed — {} error(s)", report.engine, report.errors.len()),
+                    (true, 0) => lang::fmt(self.s().status_compile_ok, &[("engine", &report.engine), ("pages", &pages)]),
+                    (true, _) => lang::fmt(self.s().status_compile_issues, &[("engine", &report.engine), ("pages", &pages), ("errors", &errors)]),
+                    (false, _) => lang::fmt(self.s().status_compile_failed, &[("engine", &report.engine), ("errors", &errors)]),
                 };
                 self.page_pts = images.iter().map(|p| p.pt).collect();
                 self.pages =
@@ -1011,7 +1245,7 @@ impl WarraqApp {
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint(),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.status = "compile worker stopped unexpectedly".into();
+                self.status = self.s().status_compile_dead.into();
                 self.compiling = false;
                 self.compile_rx = None;
             }
@@ -1079,6 +1313,10 @@ impl WarraqApp {
                                 .as_array()
                                 .map(|ls| ls.iter().filter_map(|l| l.as_str().map(String::from)).collect())
                                 .unwrap_or_default(),
+                            bibliographies: f["bibliographies"]
+                                .as_array()
+                                .map(|bs| bs.iter().filter_map(|b| b.as_str().map(String::from)).collect())
+                                .unwrap_or_default(),
                             path,
                         }
                     })
@@ -1097,6 +1335,28 @@ impl WarraqApp {
                 self.proj_labels.push(l.clone());
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let root = std::fs::canonicalize(self.project_root()).unwrap_or_else(|_| self.project_root());
+            let mut paths = BTreeSet::new();
+            for f in &self.proj_files {
+                let dir = f.path.parent().map(Path::to_path_buf).unwrap_or_else(|| self.project_root());
+                for bib in &f.bibliographies {
+                    let mut path = dir.join(bib);
+                    if path.extension().is_none() {
+                        path.set_extension("bib");
+                    }
+                    if let Ok(canon) = std::fs::canonicalize(&path) {
+                        if canon.starts_with(&root) {
+                            paths.insert(canon);
+                        }
+                    }
+                }
+            }
+            self.proj_bibs.clear();
+            let paths: Vec<PathBuf> = paths.into_iter().collect();
+            cite::scan_bib_files(&paths, &mut self.proj_bibs, &mut Vec::new());
+        }
         self.proj_missing = v["missing"].as_array().map_or(0, |m| m.len());
     }
 
@@ -1105,7 +1365,7 @@ impl WarraqApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn forward_sync(&mut self, now: f64) {
         let (Some(pdf), Some(src)) = (self.pdf_path.clone(), self.session.path().map(Path::to_path_buf)) else {
-            self.status = "compile first — no SyncTeX data".into();
+            self.status = self.s().status_no_synctex.into();
             return;
         };
         // synctex records absolute source paths.
@@ -1128,9 +1388,9 @@ impl WarraqApp {
                     );
                     self.flash = Some(Flash { page: self.page_idx, rect_pt: r, at: now });
                 }
-                None => self.status = format!("no SyncTeX record at line {line}"),
+                None => self.status = self.s().status_no_synctex.into(),
             },
-            Err(e) => self.status = format!("synctex: {e}"),
+            Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", "SyncTeX"), ("error", &e.to_string())]),
         }
     }
 
@@ -1151,13 +1411,11 @@ impl WarraqApp {
                 let line = loc.line as usize;
                 let col = loc.column.unwrap_or(1) as usize;
                 self.goto = Some(offset_of_line_col(self.session.source(), line, col));
-                self.status = format!(
-                    "jumped to {}:{line}",
-                    loc.file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| loc.file.display().to_string())
-                );
+                let file = loc.file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| loc.file.display().to_string());
+                self.status = lang::fmt(self.s().status_jumped, &[("file", &file), ("line", &line.to_string())]);
             }
-            Ok(None) => self.status = "no SyncTeX record at that point".into(),
-            Err(e) => self.status = format!("synctex: {e}"),
+            Ok(None) => self.status = self.s().status_no_synctex.into(),
+            Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", "SyncTeX"), ("error", &e.to_string())]),
         }
     }
 
@@ -1177,26 +1435,59 @@ impl WarraqApp {
         }
     }
 
+    /// Resolve an engine-reported issue path. Relative log paths are under
+    /// the project root; an absent path means the open compile document.
+    fn issue_path(&self, file: Option<&Path>) -> PathBuf {
+        match file {
+            Some(p) if p.is_absolute() => p.to_path_buf(),
+            Some(p) => self.project_root().join(p),
+            None => self.session.path().map(Path::to_path_buf).unwrap_or_default(),
+        }
+    }
+
+    /// Whether a reported issue belongs to the buffer currently in the
+    /// editor — relative paths and symlinks compare through canonicalization.
+    fn issue_is_current(&self, file: Option<&Path>) -> bool {
+        let target = self.issue_path(file);
+        let Some(current) = self.session.path() else { return file.is_none() };
+        std::fs::canonicalize(&target).unwrap_or(target) == std::fs::canonicalize(current).unwrap_or_else(|_| current.to_path_buf())
+    }
+
+    /// Jump to a compile issue, opening its file when the log attributes it
+    /// to a different member of the project.
+    fn goto_issue(&mut self, file: Option<&Path>, line: Option<u32>) {
+        let path = self.issue_path(file);
+        if self.session.path() != Some(path.as_path()) && !path.as_os_str().is_empty() {
+            self.open_path(path);
+        }
+        let Some(line) = line else { return };
+        let src = self.session.source().to_string();
+        self.goto = Some(offset_of_line_col(&src, line as usize, 1));
+    }
+
     /// Rebuild gutter marks from the compile report. Only issues with a
-    /// reported line get a dot — positions are never invented. Marks are
-    /// kept until the next compile or a file switch (edits leave them
-    /// stale, like TeXstudio).
+    /// reported line and attributed to the open file get a dot — positions
+    /// are never invented. Marks are kept until the next compile or a file
+    /// switch (edits leave them stale, like TeXstudio).
     fn rebuild_marks(&mut self) {
         self.marks.clear();
         let Some(r) = &self.report else { return };
-        for e in &r.errors {
-            let Some(l) = e.line else { continue };
-            let m = self.marks.entry(l as usize).or_insert_with(|| GutterMark { is_error: true, messages: Vec::new() });
-            m.is_error = true;
-            m.messages.push(e.message.clone());
-        }
-        for w in &r.warnings {
-            let Some(l) = w.line else { continue };
-            self.marks
-                .entry(l as usize)
-                .or_insert_with(|| GutterMark { is_error: false, messages: Vec::new() })
-                .messages
-                .push(format!("warning: {}", w.message));
+        let marks: Vec<_> = r
+            .errors
+            .iter()
+            .filter(|e| self.issue_is_current(e.file.as_deref()))
+            .filter_map(|e| e.line.map(|l| (l as usize, true, e.message.clone())))
+            .chain(
+                r.warnings
+                    .iter()
+                    .filter(|w| self.issue_is_current(w.file.as_deref()))
+                    .filter_map(|w| w.line.map(|l| (l as usize, false, format!("{}: {}", self.s().warning_label, w.message)))),
+            )
+            .collect();
+        for (line, is_error, message) in marks {
+            let mark = self.marks.entry(line).or_insert_with(|| GutterMark { is_error, messages: Vec::new() });
+            mark.is_error |= is_error;
+            mark.messages.push(message);
         }
     }
 
@@ -1309,23 +1600,23 @@ impl WarraqApp {
     /// (insert/delete replication happens in the editor change path).
     fn toggle_mirrors(&mut self, ctx: &egui::Context, editor_id: egui::Id) {
         if self.mirrors.take().is_some() {
-            self.status = "mirrors cleared".into();
+            self.status = self.s().status_mirrors_cleared.into();
             return;
         }
         let src = self.session.source();
         let Some(range) = egui::text_edit::TextEditState::load(ctx, editor_id).and_then(|st| st.cursor.char_range()) else { return };
         let (lo, hi) = (range.primary.index.0.min(range.secondary.index.0), range.primary.index.0.max(range.secondary.index.0));
         if lo == hi {
-            self.status = "select text first, then Ctrl+M".into();
+            self.status = self.s().status_select_text.into();
             return;
         }
         let needle: String = src.chars().skip(lo).take(hi - lo).collect();
         let others: Vec<_> = mirrors::occurrences(src, &needle).into_iter().filter(|r| *r != (lo, hi)).collect();
         if others.is_empty() {
-            self.status = "no other occurrences".into();
+            self.status = self.s().status_no_occurrences.into();
             return;
         }
-        self.status = format!("editing {} sites at once — Ctrl+M or Esc to stop", others.len() + 1);
+        self.status = lang::fmt(self.s().status_mirror_sites, &[("n", &(others.len() + 1).to_string())]);
         self.mirrors = Some(mirrors::Mirrors { primary: (lo, hi), others });
     }
 
@@ -1444,6 +1735,9 @@ impl WarraqApp {
                     if cite::cite_button(ui, s.cite).clicked() {
                         self.open_cite(ui.ctx());
                     }
+                    if icon_button(ui, 14.0, icons::settings, &lang::view(s.settings), true).clicked() {
+                        self.settings_open = !self.settings_open;
+                    }
                     if icon_button(ui, 14.0, icons::question, &lang::view(s.help), true)
                         .on_hover_text(lang::view(s.shortcuts_hint).into_owned())
                         .clicked()
@@ -1474,7 +1768,7 @@ impl WarraqApp {
                 ui.horizontal(|ui| {
                     let root = self.project_root();
                     if icon_button(ui, 14.0, icons::page_new, "", true).on_hover_text(lang::view(s.new_file)).clicked() {
-                        self.new_entry = Some(NewEntry { dir: root.clone(), name: String::new(), is_dir: false });
+                        self.new_untitled();
                     }
                     if icon_button(ui, 14.0, icons::folder_new, "", true).on_hover_text(lang::view(s.new_folder)).clicked() {
                         self.new_entry = Some(NewEntry { dir: root.clone(), name: String::new(), is_dir: true });
@@ -1624,6 +1918,46 @@ impl WarraqApp {
             });
     }
 
+    /// Compact LaTeX authoring bar — the same role as the formatting strip
+    /// in desktop TeX editors, but kept command/source oriented.
+    fn latex_toolbar(&mut self, ui: &mut egui::Ui) {
+        let s = self.s();
+        egui::Frame::new().fill(theme::pal().top_bg).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let ctx = ui.ctx().clone();
+                if ui.button("B").on_hover_text(lang::view(s.tb_bold)).clicked() {
+                    self.insert_latex(&ctx, "\\textbf{", "}", 1);
+                }
+                if ui.button("I").on_hover_text(lang::view(s.tb_italic)).clicked() {
+                    self.insert_latex(&ctx, "\\textit{", "}", 1);
+                }
+                if ui.button("U").on_hover_text(lang::view(s.tb_underline)).clicked() {
+                    self.insert_latex(&ctx, "\\underline{", "}", 1);
+                }
+                ui.separator();
+                if ui.button("§").on_hover_text(lang::view(s.tb_section)).clicked() {
+                    self.insert_latex(&ctx, "\\section{", "}", 1);
+                }
+                if ui.button("$x$").on_hover_text(lang::view(s.tb_math)).clicked() {
+                    self.insert_latex(&ctx, "$", "$", 1);
+                }
+                if ui.button("Ω").on_hover_text(lang::view(s.tb_symbols)).clicked() {
+                    self.symbols_open = !self.symbols_open;
+                }
+                ui.separator();
+                ui.menu_button(lang::view(s.tb_env), |ui| {
+                    for env in ["itemize", "enumerate", "description", "equation", "align", "figure", "table", "center"] {
+                        if ui.button(env).clicked() {
+                            let after = format!("\n\\end{{{env}}}");
+                            self.insert_latex(&ctx, &format!("\\begin{{{env}}}\n"), &after, after.len());
+                            ui.close();
+                        }
+                    }
+                });
+            });
+        });
+    }
+
     /// Editor column: tab strip, guttered code editor, status strip.
     fn editor_pane(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::pal().editor_bg)).show(ui, |ui| {
@@ -1651,6 +1985,8 @@ impl WarraqApp {
                     });
                 });
             });
+
+            self.latex_toolbar(ui);
 
             // Editor body
             let mut src = self.session.source().to_string();
@@ -2084,6 +2420,12 @@ impl WarraqApp {
                     {
                         self.print_pdf();
                     }
+                    if icon_button(ui, 13.0, icons::export, "", self.pdf_path.is_some())
+                        .on_hover_text(lang::view(s.export_hint).into_owned())
+                        .clicked()
+                    {
+                        self.export_pdf();
+                    }
                 });
             });
             ui.separator();
@@ -2302,25 +2644,47 @@ impl WarraqApp {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(lang::view(s.logs_title)).size(10.0).color(theme::pal().faint).strong());
                     if let Some(r) = &self.report {
-                        ui.weak(format!("{} · {} error(s) · {} warning(s)", r.engine, r.errors.len(), r.warnings.len()));
+                        ui.weak(lang::fmt(
+                            s.logs_summary,
+                            &[
+                                ("errors", &r.errors.len().to_string()),
+                                ("warnings", &r.warnings.len().to_string()),
+                                ("pages", &r.pages.unwrap_or(0).to_string()),
+                                ("engine", &r.engine),
+                            ],
+                        ));
                     }
                 });
                 ui.separator();
                 egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
                     if let Some(r) = &self.report {
-                        for e in &r.errors {
-                            let msg = match e.line {
-                                Some(l) => format!("l.{l}  {}", e.message),
-                                None => e.message.clone(),
+                        let issues: Vec<_> = r
+                            .errors
+                            .iter()
+                            .map(|e| (e.file.clone(), e.line, e.message.clone(), true))
+                            .chain(r.warnings.iter().map(|w| (w.file.clone(), w.line, format!("{}: {}", s.warning_label, w.message), false)))
+                            .collect();
+                        let log_tail = r.log_tail.clone();
+                        let mut jump = None;
+                        for (file, line, message, is_error) in issues {
+                            let path = self.issue_path(file.as_deref());
+                            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.untitled.into());
+                            let msg = match line {
+                                Some(l) => format!("{name}:{l}  {message}"),
+                                None => format!("{name}  {message}"),
                             };
-                            ui.label(egui::RichText::new(lang::view(&msg)).color(theme::pal().error).size(11.5));
+                            let color = if is_error { theme::pal().error } else { theme::pal().warn };
+                            let resp = ui.selectable_label(false, egui::RichText::new(lang::view(&msg)).color(color).size(11.5));
+                            if resp.clicked() {
+                                jump = Some((file, line));
+                            }
                         }
-                        for w in &r.warnings {
-                            ui.label(egui::RichText::new(lang::view(&format!("warning: {}", w.message))).color(theme::pal().warn).size(11.5));
-                        }
-                        if !r.log_tail.is_empty() {
+                        if !log_tail.is_empty() {
                             ui.add_space(4.0);
-                            ui.label(egui::RichText::new(&r.log_tail).monospace().size(10.5).color(theme::pal().muted));
+                            ui.label(egui::RichText::new(log_tail).monospace().size(10.5).color(theme::pal().muted));
+                        }
+                        if let Some((file, line)) = jump {
+                            self.goto_issue(file.as_deref(), line);
                         }
                     } else {
                         ui.weak(lang::view(s.logs_empty));
@@ -2402,9 +2766,9 @@ impl WarraqApp {
             match res {
                 Ok(()) => {
                     self.tree_scanned_at = f64::NEG_INFINITY;
-                    self.status = format!("created {}", path.display());
+                    self.status = lang::fmt(self.s().status_created, &[("path", &path.display().to_string())]);
                 }
-                Err(e) => self.status = format!("cannot create {}: {e}", path.display()),
+                Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", &path.display().to_string()), ("error", &e.to_string())]),
             }
         } else {
             self.new_entry = Some(entry);
@@ -2504,10 +2868,10 @@ impl WarraqApp {
                 &serde_json::json!({"path": path.display().to_string(), "category": "community", "license": self.tpl_license.trim()}),
             ) {
                 Ok(v) => {
-                    self.status = format!("imported {} — {} file(s)", v["id"].as_str().unwrap_or("template"), v["files"].as_i64().unwrap_or(0));
+                    self.status = lang::fmt(self.s().status_imported, &[("id", v["id"].as_str().unwrap_or("template"))]);
                     self.load_templates();
                 }
-                Err(e) => self.status = format!("template.import: {e}"),
+                Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", "template.import"), ("error", &e.to_string())]),
             }
         }
     }
@@ -2701,7 +3065,7 @@ impl WarraqApp {
                         self.open_path(path);
                         self.tpl_open = false;
                     }
-                    Err(e) => self.status = format!("template.new: {e}"),
+                    Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", "template.new"), ("error", &e.to_string())]),
                 }
             }
         }
@@ -2788,26 +3152,26 @@ impl WarraqApp {
             let label = self.hist_label.trim();
             match self.session.execute("project.snapshot", &serde_json::json!({"label": label})) {
                 Ok(v) => {
-                    self.status = format!("snapshot {} — {} file(s)", v["id"].as_str().unwrap_or("?"), v["files"].as_i64().unwrap_or(0));
+                    self.status = lang::fmt(self.s().status_snapshot, &[("id", v["id"].as_str().unwrap_or("?"))]);
                     self.load_snaps();
                 }
-                Err(e) => self.status = format!("snapshot: {e}"),
+                Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", "snapshot"), ("error", &e.to_string())]),
             }
         }
         if let Some(id) = restore {
             match self.session.execute("snapshot.restore", &serde_json::json!({"id": id, "confirm": true})) {
-                Ok(v) => {
-                    self.status = format!("restored {} file(s) from {id}", v["restored"].as_i64().unwrap_or(0));
+                Ok(_) => {
+                    self.status = self.s().status_restored.into();
                     // Reload the open file — restore overwrote it on disk.
                     if let Some(p) = self.session.path().map(Path::to_path_buf) {
                         if let Err(e) = self.session.open(&p) {
-                            self.status = format!("restored, but reload failed: {e}");
+                            self.status = lang::fmt(self.s().status_failed, &[("context", self.s().history), ("error", &e.to_string())]);
                         } else {
                             self.reparse();
                         }
                     }
                 }
-                Err(e) => self.status = format!("restore: {e}"),
+                Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", "restore"), ("error", &e.to_string())]),
             }
             self.hist_confirm = None;
         }
@@ -2852,6 +3216,123 @@ impl WarraqApp {
             });
     }
 
+    /// Preferences: the same persisted controls as the toolbar menus,
+    /// gathered into one discoverable dialog.
+    fn settings_modal(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+        let s = self.s();
+        let mut open = self.settings_open;
+        egui::Window::new(lang::view(s.settings_title))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::Grid::new("settings-grid").num_columns(2).spacing(egui::vec2(14.0, 8.0)).show(ui, |ui| {
+                    ui.label(lang::view(s.language));
+                    let mut language = self.lang();
+                    egui::ComboBox::from_id_salt("settings-language").selected_text(lang::view(language.native_name())).show_ui(ui, |ui| {
+                        for l in lang::ALL {
+                            ui.selectable_value(&mut language, *l, lang::view(l.native_name()));
+                        }
+                    });
+                    if language != self.lang() {
+                        self.set_lang(language);
+                    }
+                    ui.end_row();
+
+                    ui.label(lang::view(s.set_theme));
+                    let mut dark = theme::is_dark();
+                    egui::ComboBox::from_id_salt("settings-theme")
+                        .selected_text(lang::view(if dark { s.theme_dark } else { s.theme_light }))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut dark, true, lang::view(s.theme_dark));
+                            ui.selectable_value(&mut dark, false, lang::view(s.theme_light));
+                        });
+                    if dark != theme::is_dark() {
+                        theme::apply(ui.ctx(), dark);
+                    }
+                    ui.end_row();
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        ui.label(lang::view(s.set_engine));
+                        let selected = self.engine_sel.and_then(|i| self.engines.get(i)).cloned().unwrap_or_else(|| s.engine_auto.into());
+                        egui::ComboBox::from_id_salt("settings-engine").selected_text(lang::view(&selected)).show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.engine_sel, None, lang::view(s.engine_auto));
+                            for (i, e) in self.engines.iter().enumerate() {
+                                ui.selectable_value(&mut self.engine_sel, Some(i), e);
+                            }
+                        });
+                        ui.end_row();
+                    }
+
+                    ui.label(lang::view(s.set_page_mode));
+                    egui::ComboBox::from_id_salt("settings-page-mode").selected_text(lang::view(self.page_mode.label(s))).show_ui(ui, |ui| {
+                        for mode in PageMode::ALL {
+                            ui.selectable_value(&mut self.page_mode, mode, lang::view(mode.label(s)));
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.checkbox(&mut self.autocompile, lang::view(s.auto_compile));
+                    let mut spell = self.spell.enabled();
+                    if ui.checkbox(&mut spell, lang::view(s.set_spellcheck)).changed() {
+                        self.spell.set_enabled(spell);
+                    }
+                    ui.end_row();
+                });
+            });
+        self.settings_open = open;
+    }
+
+    /// Categorized symbol palette; a click inserts the LaTeX command at
+    /// the caret (or wraps the current selection where that makes sense).
+    fn symbols_modal(&mut self, ctx: &egui::Context) {
+        if !self.symbols_open {
+            return;
+        }
+        let s = self.s();
+        let mut open = self.symbols_open;
+        let mut insert: Option<(String, usize)> = None;
+        egui::Window::new(lang::view(s.symbols_title))
+            .collapsible(false)
+            .resizable(true)
+            .default_size(egui::vec2(420.0, 300.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for (label, commands) in [
+                        (s.symbols_greek, SYMBOL_GREEK),
+                        (s.symbols_math, SYMBOL_MATH),
+                        (s.symbols_relations, SYMBOL_RELATIONS),
+                        (s.symbols_arrows, SYMBOL_ARROWS),
+                    ] {
+                        ui.label(egui::RichText::new(lang::view(label)).size(10.0).color(theme::pal().faint));
+                        ui.horizontal_wrapped(|ui| {
+                            for command in commands {
+                                if ui.button(format!("\\{command}")).clicked() {
+                                    let caret_back = match *command {
+                                        "frac{}{}" => 3,
+                                        "sqrt{}" => 1,
+                                        _ => 0,
+                                    };
+                                    insert = Some((format!("\\{command}"), caret_back));
+                                }
+                            }
+                        });
+                        ui.add_space(8.0);
+                    }
+                });
+            });
+        self.symbols_open = open;
+        if let Some((command, caret_back)) = insert {
+            self.insert_latex(ctx, &command, "", caret_back);
+        }
+    }
+
     /// Window: every key binding the app handles, grouped. Opened by
     /// the `?` toolbar button or F1.
     fn shortcuts_modal(&mut self, ctx: &egui::Context) {
@@ -2877,7 +3358,8 @@ impl WarraqApp {
                         egui::Grid::new(("keys", group)).num_columns(2).spacing([24.0, 3.0]).show(ui, |ui| {
                             for (keys, action) in *rows {
                                 ui.label(egui::RichText::new(*keys).size(11.5).monospace().color(theme::pal().accent_dim));
-                                ui.label(egui::RichText::new(*action).size(11.5));
+                                let action = s.sc_actions.get(*action).copied().unwrap_or_default();
+                                ui.label(egui::RichText::new(lang::view(action)).size(11.5));
                                 ui.end_row();
                             }
                         });
@@ -3007,7 +3489,7 @@ impl WarraqApp {
                         } else {
                             ui.horizontal(|ui| {
                                 ui.spinner();
-                                ui.label(egui::RichText::new("rendering…").size(10.0).color(theme::pal().muted));
+                                ui.label(egui::RichText::new(lang::view(self.s().math_rendering)).size(10.0).color(theme::pal().muted));
                             });
                         }
                     });
@@ -3101,34 +3583,25 @@ const ZOOM_PRESETS: &[f32] = &[0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 /// Key bindings the shortcuts window lists — (group, [(keys, action)]).
 /// Keep in sync with `editor_shortcuts`, `ui`'s global keys, and the
 /// editor gestures (completion, SyncTeX click).
-const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
-    ("file", &[("Ctrl+S", "save"), ("print button (toolbar)", "print the PDF"), ("F12", "save a window screenshot")]),
+const SHORTCUTS: &[(&str, &[(&str, usize)])] = &[
+    ("file", &[("Ctrl+S", 0), ("print button (toolbar)", 1), ("F12", 2)]),
     (
         "editing",
         &[
-            ("Ctrl+Z / Ctrl+Shift+Z", "undo / redo"),
-            ("Ctrl+D", "duplicate line"),
-            ("Alt+↑ / Alt+↓", "move line up / down"),
-            ("Ctrl+/", "comment / uncomment selection"),
-            ("Ctrl+Shift+K", "delete line"),
-            ("Ctrl+Shift+Backspace", "delete to end of line"),
-            ("\\…", "command completion — Enter/Tab accepts, Esc closes"),
-            ("\\begin{ / \\end{", "environment completion"),
-            ("Ctrl+M (with selection)", "mirror all occurrences — type once, edit all"),
-            ("Esc", "clear mirrors"),
+            ("Ctrl+Z / Ctrl+Shift+Z", 3),
+            ("Ctrl+D", 4),
+            ("Alt+↑ / Alt+↓", 5),
+            ("Ctrl+/", 6),
+            ("Ctrl+Shift+K", 7),
+            ("Ctrl+Shift+Backspace", 8),
+            ("\\…", 9),
+            ("\\begin{ / \\end{", 10),
+            ("Ctrl+M (with selection)", 11),
+            ("Esc", 12),
         ],
     ),
-    (
-        "navigation",
-        &[
-            ("Ctrl+click in source", "jump to that spot in the PDF"),
-            ("click in PDF", "jump back to the source line"),
-            ("Ctrl+Shift+C", "insert a citation"),
-            ("‹ › (toolbar)", "previous / next page or spread"),
-            ("Ctrl+scroll over PDF", "zoom in / out"),
-        ],
-    ),
-    ("help", &[("F1", "this window")]),
+    ("navigation", &[("Ctrl+click in source", 13), ("click in PDF", 14), ("Ctrl+Shift+C", 15), ("‹ › (toolbar)", 16), ("Ctrl+scroll over PDF", 17)]),
+    ("help", &[("F1", 18)]),
 ];
 
 /// How many spreads `n` pages make in `mode`. Single/continuous treat
@@ -3573,6 +4046,10 @@ impl eframe::App for WarraqApp {
         let (dark, auto, zoom, outline, logs, spell, pm) =
             (theme::is_dark(), self.autocompile, self.zoom.pref(), self.outline_open, self.show_logs, self.spell.enabled(), self.page_mode.pref());
         let (ai_ep, ai_model) = (self.ai.endpoint.clone(), self.ai.model.clone());
+        let last_file = self.session.path().map(|p| p.display().to_string()).unwrap_or_default();
+        let autosave_source = if self.session.dirty() { self.session.source().to_string() } else { String::new() };
+        let (autosave_line, autosave_col) = self.cursor_lc;
+        let autosave_dirty = self.session.dirty() && !autosave_source.is_empty();
         self.settings.update(|p| {
             p.dark = dark;
             p.autocompile = auto;
@@ -3584,6 +4061,11 @@ impl eframe::App for WarraqApp {
             p.page_mode = pm.into();
             p.ai_endpoint = ai_ep.clone();
             p.ai_model = ai_model.clone();
+            p.last_file = last_file.clone();
+            p.autosave_source = autosave_source.clone();
+            p.autosave_dirty = autosave_dirty;
+            p.autosave_line = autosave_line;
+            p.autosave_col = autosave_col;
         });
         craft_quit::on_close_request(ctx);
     }
@@ -3614,6 +4096,8 @@ impl eframe::App for WarraqApp {
         self.editor_pane(ui);
         self.new_entry_modal(&ctx);
         self.stats_modal(&ctx);
+        self.settings_modal(&ctx);
+        self.symbols_modal(&ctx);
         self.shortcuts_modal(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
         {

@@ -194,6 +194,7 @@ fn bib_file(_path: &str, src: &str) -> ExitCode {
 
 /// Engine command names — kept in sync with `Session::execute` by hand.
 const COMMANDS: &[&str] = &[
+    "document.new",
     "document.open",
     "document.save",
     "document.compile",

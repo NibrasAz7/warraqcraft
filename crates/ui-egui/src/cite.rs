@@ -9,11 +9,12 @@
 //! untrusted input. The web build can't read the folder: the dialog
 //! still opens and explains itself when the list is empty.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{lang, theme};
 
 /// One bibliography row: a `@…{key, …}` entry and the file it came from.
+#[derive(Clone)]
 pub struct CiteEntry {
     pub key: String,
     pub author: String,
@@ -31,6 +32,35 @@ const MAX_BYTES: u64 = 512 * 1024;
 /// Rows rendered at once — the list stays interactive on huge
 /// bibliographies; the filter narrows the rest.
 const MAX_ROWS: usize = 200;
+
+/// Read a bounded set of `.bib` files into picker rows. Used both by the
+/// dialog's root scan and by inline `\cite{` completion over the project
+/// bibliography list reported by `project.structure`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn scan_bib_files(paths: &[PathBuf], entries: &mut Vec<CiteEntry>, issues: &mut Vec<(String, usize)>) {
+    use std::io::Read;
+    for p in paths.iter().take(MAX_FILES) {
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string());
+        let mut text = String::new();
+        let Ok(f) = std::fs::File::open(p) else { continue };
+        if f.take(MAX_BYTES).read_to_string(&mut text).is_err() {
+            continue;
+        }
+        let bib = texparse::parse_bib(&text);
+        if !bib.issues.is_empty() {
+            issues.push((name.clone(), bib.issues.len()));
+        }
+        for e in &bib.entries {
+            entries.push(CiteEntry {
+                key: e.key.clone(),
+                author: tidy(e.field("author").unwrap_or("")),
+                title: tidy(e.field("title").unwrap_or("")),
+                year: tidy(e.field("year").unwrap_or("")),
+                file: name.clone(),
+            });
+        }
+    }
+}
 
 /// The picker's state; the window is visible while `open` is set.
 #[derive(Default)]
@@ -66,7 +96,6 @@ impl CiteDialog {
     /// `.bib` files in `root` and its immediate subdirectories.
     #[cfg(not(target_arch = "wasm32"))]
     fn scan(&mut self, root: &Path) {
-        use std::io::Read;
         // Candidate dirs: root plus one subdirectory level.
         let mut dirs = vec![root.to_path_buf()];
         if let Ok(read) = std::fs::read_dir(root) {
@@ -90,27 +119,7 @@ impl CiteDialog {
         }
         bibs.sort();
         bibs.truncate(MAX_FILES);
-        for p in bibs {
-            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string());
-            let mut text = String::new();
-            let Ok(f) = std::fs::File::open(&p) else { continue };
-            if f.take(MAX_BYTES).read_to_string(&mut text).is_err() {
-                continue;
-            }
-            let bib = texparse::parse_bib(&text);
-            if !bib.issues.is_empty() {
-                self.issues.push((name.clone(), bib.issues.len()));
-            }
-            for e in &bib.entries {
-                self.entries.push(CiteEntry {
-                    key: e.key.clone(),
-                    author: tidy(e.field("author").unwrap_or("")),
-                    title: tidy(e.field("title").unwrap_or("")),
-                    year: tidy(e.field("year").unwrap_or("")),
-                    file: name.clone(),
-                });
-            }
-        }
+        scan_bib_files(&bibs, &mut self.entries, &mut self.issues);
     }
 
     /// The web build can't read the project folder — `open` still raises

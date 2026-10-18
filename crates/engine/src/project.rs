@@ -25,7 +25,8 @@ const MAX_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_PROJECT_FILES: usize = 128;
 
 /// `project.structure` — `{root, files: [{path, name, headings, labels,
-/// cite_keys, issues}], labels, cite_keys, missing}`. `labels`/`cite_keys`
+/// cite_keys, bibliographies, issues}], labels, cite_keys, missing}`.
+/// `labels`/`cite_keys`
 /// are order-preserving unions across all files. `missing` lists deps
 /// that didn't resolve, minus `.sty`/`.cls` (those live in the TeX
 /// distro, not the project — flagging them would be noise).
@@ -66,6 +67,7 @@ pub fn run(sess: &Session) -> Result<Value, EngineError> {
             "headings": d.headings.iter().map(|h| json!({"line": h.pos.line, "level": h.level, "title": h.title})).collect::<Vec<_>>(),
             "labels": d.labels.iter().map(|(l, _)| l).collect::<Vec<_>>(),
             "cite_keys": d.cite_keys.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            "bibliographies": d.bibliographies.iter().map(|(b, _)| b).collect::<Vec<_>>(),
             "issues": d.issues.iter().map(|i| json!({"line": i.pos.line, "col": i.pos.col, "message": i.message})).collect::<Vec<_>>(),
         }));
     }

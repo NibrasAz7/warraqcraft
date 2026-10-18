@@ -1,4 +1,5 @@
 target/
+dist/
 .warraqcraft/
 
 # TeX build artifacts from in-place example compiles

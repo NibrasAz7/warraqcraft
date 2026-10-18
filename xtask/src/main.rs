@@ -10,8 +10,9 @@ fn main() -> ExitCode {
         "test" => run(&["test", "--workspace"]),
         "clippy" => run(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]),
         "layers" => layers(),
+        "wasm" => wasm(),
         other => {
-            eprintln!("unknown xtask '{other}' (have: ci, fmt, test, clippy, layers)");
+            eprintln!("unknown xtask '{other}' (have: ci, fmt, test, clippy, layers, wasm)");
             ExitCode::FAILURE
         }
     }
@@ -26,6 +27,12 @@ fn ci() -> ExitCode {
         }
     }
     layers()
+}
+
+/// WASM compatibility gate for the lower crates that are intended to run
+/// in a future web shell. Engine/desktop-only crates stay native.
+fn wasm() -> ExitCode {
+    run(&["check", "-p", "texparse", "-p", "texpkg", "--target", "wasm32-unknown-unknown"])
 }
 
 fn run(args: &[&str]) -> ExitCode {

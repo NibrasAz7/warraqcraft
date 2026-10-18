@@ -98,6 +98,8 @@ impl From<std::io::Error> for EngineError {
 /// One TeX compile error from the `.log`.
 #[derive(Debug, Clone)]
 pub struct CompileError {
+    /// Source file, if the log reported or implied one.
+    pub file: Option<PathBuf>,
     /// Source line in the `.tex` file, if the log reported one.
     pub line: Option<u32>,
     /// Error message (single line).
@@ -123,8 +125,16 @@ pub struct CompileReport {
 
 impl CompileReport {
     fn to_json(&self) -> Value {
-        let errs: Vec<Value> = self.errors.iter().map(|e| json!({"line": e.line, "message": e.message})).collect();
-        let warns: Vec<Value> = self.warnings.iter().map(|w| json!({"line": w.line, "message": w.message})).collect();
+        let errs: Vec<Value> = self
+            .errors
+            .iter()
+            .map(|e| json!({"file": e.file.as_ref().map(|p| p.display().to_string()), "line": e.line, "message": e.message}))
+            .collect();
+        let warns: Vec<Value> = self
+            .warnings
+            .iter()
+            .map(|w| json!({"file": w.file.as_ref().map(|p| p.display().to_string()), "line": w.line, "message": w.message}))
+            .collect();
         json!({
             "engine": self.engine,
             "pdf": self.pdf.as_ref().map(|p| p.display().to_string()),
@@ -227,6 +237,16 @@ impl Session {
     /// Dispatch a command by id. Params are JSON; results are JSON.
     pub fn execute(&mut self, cmd: &str, params: &Value) -> Result<Value, EngineError> {
         match cmd {
+            "document.new" => {
+                // Optional starter text; the buffer is dirty and has no path
+                // until document.save gives it one.
+                let text = params.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+                self.path = None;
+                self.src = text;
+                self.dirty = true;
+                self.user_tools.clear();
+                Ok(json!({"ok": true, "path": Value::Null}))
+            }
             "document.open" => {
                 let path = params.get("path").and_then(Value::as_str).ok_or(EngineError::BadParam("path"))?;
                 self.open(Path::new(path))?;
@@ -551,7 +571,7 @@ pub fn compile_file_with(path: &Path, src: Option<&str>, engine_override: Option
         // No log file — fall back to the captured process output.
         String::from_utf8_lossy(&output.stdout).into_owned()
     });
-    let (errors, warnings, pages) = parse_log(&log);
+    let (errors, warnings, pages) = parse_log(&log, parent);
 
     let pdf = outdir.join(format!("{stem}.pdf"));
     let pdf = if pdf.is_file() { Some(pdf) } else { None };
@@ -576,20 +596,25 @@ fn log_needs_rerun(log_path: &Path) -> bool {
         || log.contains("Please (re)run BibTeX")
 }
 
-/// Parse a TeX log into `(errors, warnings, page_count)`.
-fn parse_log(log: &str) -> (Vec<CompileError>, Vec<CompileError>, Option<u32>) {
+/// Parse a TeX log into `(errors, warnings, page_count)`. `base` resolves
+/// the relative paths TeX writes into `-file-line-error` records and the
+/// parenthesized input-file stack.
+fn parse_log(log: &str, base: &Path) -> (Vec<CompileError>, Vec<CompileError>, Option<u32>) {
     let lines: Vec<&str> = log.lines().collect();
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let mut pages = None;
+    let mut file_stack = Vec::new();
 
     let mut i = 0;
     while i < lines.len() {
         let Some(line) = lines.get(i) else { break };
         i += 1;
+        update_log_file_stack(line, base, &mut file_stack);
+        let current_file = file_stack.last().cloned();
 
         // `! message` fatal error; the `l.<n>` context line gives the
-        // source line number.
+        // source line number, while the input stack gives the file.
         if let Some(msg) = line.strip_prefix('!') {
             let mut lineno = None;
             for ctx in lines.iter().skip(i).take(6) {
@@ -601,22 +626,22 @@ fn parse_log(log: &str) -> (Vec<CompileError>, Vec<CompileError>, Option<u32>) {
                     break;
                 }
             }
-            errors.push(CompileError { line: lineno, message: msg.trim().to_string() });
+            errors.push(CompileError { file: current_file, line: lineno, message: msg.trim().to_string() });
             continue;
         }
 
         // `-file-line-error` style: `<file>:<line>: <message>`.
-        if let Some((line_no, msg)) = file_line_error(line) {
-            // Skip if a `!` error already covered this line.
-            if errors.iter().any(|e: &CompileError| e.line == Some(line_no)) {
+        if let Some((file, line_no, msg)) = file_line_error(line, base) {
+            // Skip if a `!` error already covered this file+line.
+            if errors.iter().any(|e: &CompileError| e.file.as_deref() == Some(file.as_path()) && e.line == Some(line_no)) {
                 continue;
             }
-            errors.push(CompileError { line: Some(line_no), message: msg });
+            errors.push(CompileError { file: Some(file), line: Some(line_no), message: msg });
             continue;
         }
 
         if let Some(msg) = line.strip_prefix("LaTeX Warning:") {
-            warnings.push(CompileError { line: input_line_number(msg), message: msg.trim().to_string() });
+            warnings.push(CompileError { file: current_file, line: input_line_number(msg), message: msg.trim().to_string() });
             continue;
         }
 
@@ -630,9 +655,41 @@ fn parse_log(log: &str) -> (Vec<CompileError>, Vec<CompileError>, Option<u32>) {
     (errors, warnings, pages)
 }
 
-/// Parse a `-file-line-error` line `path:12: message` → (12, message).
+/// Track TeX's `(file ... )` input nesting on a log line. Only source-like
+/// paths are pushed, so package comments and `(3 pages)` never enter the
+/// stack; wrapped or malformed lines simply leave the previous file active.
+fn update_log_file_stack(line: &str, base: &Path, stack: &mut Vec<PathBuf>) {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len() && !matches!(bytes[end], b' ' | b'\t' | b'(' | b')') {
+                    end += 1;
+                }
+                if let Some(raw) = line.get(start..end).map(|s| s.trim_matches('"')) {
+                    let path = Path::new(raw);
+                    let is_source = path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["tex", "sty", "cls", "bib"].contains(&e));
+                    if is_source {
+                        stack.push(if path.is_absolute() { path.to_path_buf() } else { base.join(path) });
+                    }
+                }
+                i = end;
+            }
+            b')' => {
+                stack.pop();
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+}
+
+/// Parse a `-file-line-error` line `path:12: message` → (path, 12, message).
 /// Skips `C:\...` drive prefixes (colon at index 1).
-fn file_line_error(line: &str) -> Option<(u32, String)> {
+fn file_line_error(line: &str, base: &Path) -> Option<(PathBuf, u32, String)> {
     let mut search_from = 0;
     // Skip a drive-letter colon like `C:`.
     if line.len() >= 2 && line.as_bytes().get(1) == Some(&b':') && line.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) {
@@ -655,7 +712,9 @@ fn file_line_error(line: &str) -> Option<(u32, String)> {
                 // A bare path colon (`main.tex:`) without a message is not
                 // an error line.
                 if !msg.is_empty() {
-                    return Some((line_no, msg.to_string()));
+                    let raw = line.get(..search_from + j)?.trim_start_matches('(').trim_matches('"');
+                    let path = Path::new(raw);
+                    return Some((if path.is_absolute() { path.to_path_buf() } else { base.join(path) }, line_no, msg.to_string()));
                 }
             }
         }
@@ -684,7 +743,7 @@ mod tests {
 
     #[test]
     fn log_parses_errors_warnings_pages() {
-        let (errors, warnings, pages) = parse_log(SAMPLE_LOG);
+        let (errors, warnings, pages) = parse_log(SAMPLE_LOG, Path::new(""));
         assert_eq!(pages, Some(3));
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings.first().map(|w| w.line), Some(Some(12)));
@@ -694,8 +753,20 @@ mod tests {
 
     #[test]
     fn file_line_error_skips_drive_colon() {
-        assert_eq!(file_line_error("C:/tmp/main.tex:4: Missing $ inserted"), Some((4, "Missing $ inserted".to_string())));
-        assert_eq!(file_line_error("This is XeTeX, Version 3.14"), None);
+        let (file, line, msg) = file_line_error("C:/tmp/main.tex:4: Missing $ inserted", Path::new("")).unwrap();
+        assert_eq!(file, Path::new("C:/tmp/main.tex"));
+        assert_eq!((line, msg.as_str()), (4, "Missing $ inserted"));
+        assert_eq!(file_line_error("This is XeTeX, Version 3.14", Path::new("")), None);
+    }
+
+    #[test]
+    fn log_tracks_input_files_for_errors_and_warnings() {
+        let base = Path::new("project");
+        let log =
+            "(./main.tex (./intro.tex\n! Undefined control sequence.\nl.4 \\bad\n)\nLaTeX Warning: Reference `x' undefined on input line 7.\n)\n";
+        let (errors, warnings, _) = parse_log(log, base);
+        assert_eq!(errors.first().and_then(|e| e.file.as_deref()), Some(base.join("intro.tex").as_path()));
+        assert_eq!(warnings.first().and_then(|w| w.file.as_deref()), Some(base.join("main.tex").as_path()));
     }
 
     #[test]
@@ -705,6 +776,15 @@ mod tests {
         assert!(matches!(s.execute("document.open", &json!({})), Err(EngineError::BadParam("path"))));
         assert!(matches!(s.execute("source.set", &json!({"text": 42})), Err(EngineError::BadParam("text"))));
         assert!(matches!(s.execute("document.save", &json!({})), Err(EngineError::NoFile)));
+    }
+
+    #[test]
+    fn document_new_makes_an_untitled_dirty_buffer() {
+        let mut s = Session::new();
+        s.execute("document.new", &json!({"text": "\\documentclass{article}\n"})).unwrap();
+        assert_eq!(s.path(), None);
+        assert!(s.dirty());
+        assert_eq!(s.source(), "\\documentclass{article}\n");
     }
 
     #[test]
@@ -736,6 +816,7 @@ mod tests {
     fn hostile_params_never_panic() {
         let mut s = Session::new();
         for cmd in [
+            "document.new",
             "document.open",
             "document.save",
             "document.compile",

@@ -14,7 +14,8 @@ widget) are tracked there — nothing in M0 depends on them.
 | M1 | Engine decision landed; `texpkg` curated package set; minimal compile pipeline (`document.compile`) | in progress — system-TeX + bundled tectonic (B-lite) done; `texpkg` open |
 | M2 | `engine` command registry + Session; CLI `--cmd` surface | in progress — Session + execute() landed; `--cmd`/control next |
 | M3 | `ui-egui` studio: project tree, editor, PDF preview, SyncTeX nav | in progress — IDE shell, editor, PDF preview, SyncTeX click-through and project-wide outline/refs done |
-| M4 | History (snapshots/diff/restore), reference-manager integration (Zotero/CSL), arabdoc + template gallery | not started |
+| M4 | History (snapshots/diff/restore), reference-manager integration (Zotero/CSL), arabdoc + template gallery | in progress — snapshots/history and multilingual source-only template gallery landed; reference-manager integration open |
+| M5 | Ship readiness: settings, print/export, untitled/autosave, platform packaging and docs | in progress |
 
 ## Progress log
 
@@ -134,3 +135,17 @@ widget) are tracked there — nothing in M0 depends on them.
   project labels tagged with their defining file (completion items are
   now owned `CompletionItem`s so label keys can carry dynamic meta).
   Exposed as `project_structure` on CLI/control/MCP.
+- M5 Wave-4 — ship-readiness workbench:
+  * Engine/UI: `document.new` creates a dirty untitled buffer; status
+    messages, shortcut help, settings, export and recovery strings are
+    localized through the 16-language catalog.
+  * UI: LaTeX formatting toolbar plus categorized Greek/arrow/operator/
+    relation symbol palette; selection-aware insertion preserves caret
+    position.
+  * Recovery: source/path/cursor autosave in preferences, restart
+    recovery prompt, and autosave cleared after a successful save.
+  * Diagnostics: file-attributed errors/warnings feed cross-file jumps;
+    project `.bib` keys now feed inline cite completion.
+  * Platform/docs: three-OS CI and release workflow, Windows/POSIX
+    packaging scripts, WASM xtask gate, collaboration and AI-harness
+    plans, README/user-guide refresh.

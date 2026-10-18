@@ -177,6 +177,29 @@ pub fn folder_open(p: &Painter, r: Rect, col: Color32) {
     ));
 }
 
+/// Outgoing arrow into a tray (export/save a copy).
+pub fn export(p: &Painter, r: Rect, col: Color32) {
+    let s = r.width().min(r.height());
+    let stroke = st(1.25, col);
+    let c = r.center();
+    let shaft = [pos2(c.x, r.top() + s * 0.18), pos2(c.x, r.bottom() - s * 0.3)];
+    p.add(Shape::line(shaft.to_vec(), stroke));
+    p.add(Shape::line(vec![pos2(c.x - s * 0.16, c.y + s * 0.04), pos2(c.x, c.y + s * 0.2), pos2(c.x + s * 0.16, c.y + s * 0.04)], stroke));
+    let tray = Rect::from_min_max(pos2(r.left() + s * 0.22, r.bottom() - s * 0.22), pos2(r.right() - s * 0.22, r.bottom() - s * 0.14));
+    p.add(Shape::line(vec![tray.left_bottom(), tray.left_top(), tray.right_top(), tray.right_bottom()], stroke));
+}
+
+/// Sliders (settings/preferences).
+pub fn settings(p: &Painter, r: Rect, col: Color32) {
+    let s = r.width().min(r.height());
+    let stroke = st(1.25, col);
+    for (i, knob) in [0.34, 0.66, 0.44].iter().enumerate() {
+        let y = r.top() + s * (0.28 + i as f32 * 0.22);
+        p.line_segment([pos2(r.left() + s * 0.18, y), pos2(r.right() - s * 0.18, y)], stroke);
+        p.circle_stroke(pos2(r.left() + s * *knob, y), s * 0.07, stroke);
+    }
+}
+
 /// Question mark (keyboard shortcuts) — drawn arc + stem + dot.
 pub fn question(p: &Painter, r: Rect, col: Color32) {
     let c = r.center();

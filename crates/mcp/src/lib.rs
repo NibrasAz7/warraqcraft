@@ -45,7 +45,8 @@ const SOURCE_URI: &str = "warraqcraft://doc/source";
 const STRUCTURE_URI: &str = "warraqcraft://doc/structure";
 const STATS_URI: &str = "warraqcraft://doc/stats";
 
-const INSTRUCTIONS: &str = "WarraqCraft edits LaTeX documents. Open a .tex file with document_open or set the buffer directly \
+const INSTRUCTIONS: &str =
+    "WarraqCraft edits LaTeX documents. Start an untitled buffer with document_new, open a .tex file with document_open or set the buffer directly \
 with source_set, then run the tools: source_get, structure_get and magic_get inspect the buffer, document_compile typesets \
 it with tectonic or a system TeX engine, math_preview renders a math fragment, text_stats reports document statistics, \
 template_* create documents from the shipped gallery, user_tool_* run configured external tools, \
@@ -57,6 +58,7 @@ snapshots of the live buffer.";
 /// MCP tool name → engine command id. The two tables stay in sync — a test
 /// pins the count and the name set.
 const TOOL_COMMANDS: &[(&str, &str)] = &[
+    ("document_new", "document.new"),
     ("document_open", "document.open"),
     ("document_save", "document.save"),
     ("document_compile", "document.compile"),
@@ -307,6 +309,14 @@ fn s(desc: &str) -> Value {
 fn tool_list() -> Vec<Value> {
     vec![
         tool(
+            "document_new",
+            "Replace the session with an untitled, unsaved buffer. Optional text gives it starter content.",
+            json!({ "text": s("Optional starter source for the new untitled buffer.") }),
+            &[],
+            false,
+            false,
+        ),
+        tool(
             "document_open",
             "Open a .tex file into the session (replaces the current buffer — save first with document_save if needed).",
             json!({ "path": s("Path of the .tex file to open.") }),
@@ -526,7 +536,7 @@ mod tests {
         let mut s = McpServer::new();
         let r = rpc(&mut s, &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})).unwrap();
         let tools = r["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 23);
+        assert_eq!(tools.len(), 24);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for (name, _) in TOOL_COMMANDS {
             assert!(names.contains(name), "tools/list missing {name}");
