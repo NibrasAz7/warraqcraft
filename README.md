@@ -205,3 +205,6 @@ cargo xtask wasm     # wasm32 compatibility for the supported crates
 
 `ROADMAP.md` tracks milestones and the progress log. `AGENTS.md` is the
 authoritative contributor/agent contract.
+[`docs/APP-SKELETON.md`](docs/APP-SKELETON.md) documents the reusable
+ArtCraft application shell for future siblings such as PhotoCraft,
+VectorCraft and PDFCraft.

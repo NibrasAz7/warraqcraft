@@ -149,3 +149,12 @@ widget) are tracked there — nothing in M0 depends on them.
   * Platform/docs: three-OS CI and release workflow, Windows/POSIX
     packaging scripts, WASM xtask gate, collaboration and AI-harness
     plans, README/user-guide refresh.
+- M5 Wave-5 — agent automation + reusable family shell:
+  * `ai.rs` adds provider presets/probing, automated local Ollama setup
+    and worker-thread asks; `engine::ai` exposes `ai.providers`,
+    `ai.probe` and `ai.ask` over CLI/control/MCP. `docs/AI-HARNESS.md`
+    maps the follow-on memory/task/system-prompt harness.
+  * `docs/APP-SKELETON.md` records the reusable ArtCraft architecture —
+    crate/layer layout, Session command contract, CLI/TCP/MCP parity,
+    prefs/recovery, i18n, templates/history, AI and packaging gates —
+    for PhotoCraft, VectorCraft, PDFCraft and future siblings.
