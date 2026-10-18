@@ -1,0 +1,7 @@
+name = "Spanish document"
+name_es = "Documento en español"
+desc = "Spanish article using pdfLaTeX and babel."
+desc_es = "Artículo en español con pdfLaTeX y babel."
+lang = "es"
+category = "starter"
+engine = "pdflatex"

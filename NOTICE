@@ -12,6 +12,11 @@ Optional bundled engine: Tectonic (https://tectonic-typesetting.github.io),
 MIT License — fetched by `scripts/fetch-tectonic.ps1` into `bin/` and
 invoked as a subprocess, never linked or copied into WarraqCraft's source.
 
+Bundled document templates are original WarraqCraft starter sources. The
+template importer is for user-selected sources and copies text formats
+only; it records the caller-provided license/provenance in template
+metadata and does not change the license of the imported materials.
+
 Third-party libraries:
 
 - craft-atomic, craft-quit, craft-settings, craft-print

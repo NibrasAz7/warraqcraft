@@ -277,6 +277,7 @@ impl Session {
             "template.list" => templates::list(),
             "template.read" => templates::read(params),
             "template.new" => templates::new(params),
+            "template.import" => templates::import(params),
             // The reachable file graph from the open document — root
             // candidates, sources, resources, unresolved deps (M4).
             "project.graph" => {
@@ -749,6 +750,7 @@ mod tests {
             "template.list",
             "template.read",
             "template.new",
+            "template.import",
             "math.preview",
             "text.stats",
             "project.graph",

@@ -1,0 +1,7 @@
+name = "Russian document"
+name_ru = "Русский документ"
+desc = "Russian article using pdfLaTeX and babel."
+desc_ru = "Русская статья с pdfLaTeX и babel."
+lang = "ru"
+category = "starter"
+engine = "pdflatex"

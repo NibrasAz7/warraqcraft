@@ -21,9 +21,10 @@ preview — with light/dark themes), compile through a bundled `tectonic`
 binary in `bin/`) or any system TeX on PATH, log-driven reruns and
 bibtex/biber passes, SyncTeX click-through both directions
 (Ctrl+click source → PDF highlight, click PDF → caret jump), an opt-in
-5-second-idle auto-compile, and a headless CLI. Not yet: in-process
-typesetter (B/A′), project-wide multi-file awareness, history, RTL,
-templates. See [`ROADMAP.md`](ROADMAP.md) for the milestone plan.
+5-second-idle auto-compile, project-wide multi-file awareness, local
+history, a multilingual RTL-aware UI, and a template gallery with
+user-source import. Not yet: in-process typesetter (B/A′). See
+[`ROADMAP.md`](ROADMAP.md) for the milestone plan.
 
 ## What it is
 
@@ -132,24 +133,23 @@ because the family already owns the hard parts:
 ## Template gallery — content is the moat
 
 Overleaf's gallery is a large part of why people choose it. WarraqCraft's
-answer is three-layered, and the middle layer is uniquely ours:
+answer is three-layered:
 
-1. **In-house library** — two collections, same author, both shippable:
-   `LaTeX-Packages/Templates` (**91 templates, LPPL-1.3c**, Zenodo
-   DOI'd, 10 categories: academic, business/legal, education, finance,
-   letters, marketing, personal, presentations…) and
-   `LaTeX-Packages/arabic-template` (~43 RTL templates backing the
-   `arabic-latex-templates` skill: academic, project management,
-   startup/legal, Islamic). All share the universal bidi/polyglossia
-   stack, so every one works bilingual out of the box.
-2. **Multi-language** — every template prepared in English, Arabic,
-   Italian and more; the gallery UI filters by document language and
-   bidi needs, not just document type.
+1. **Bundled starter library** — original, source-only templates covering
+   English, Arabic, Persian, Urdu, French, Italian, German, Spanish,
+   Portuguese, Turkish, Latin, Russian, Chinese, Japanese, Korean and
+   Hindi. A larger curated collection can join once its license has been
+   reviewed and its assets packaged.
+2. **User/community imports** — an explicit importer accepts a template
+   file or folder, copies only text sources (`.tex`, `.sty`, `.cls`,
+   `.bib`, …), skips fonts, PDFs, binaries and build output, and records
+   the caller-provided license/provenance. The CC-BY-NC Arabic template
+   skill assets are therefore not bundled; users may import sources they
+   are entitled to use, and their license obligations remain with them.
 3. **Overleaf-gallery compatible** — gallery/CTAN templates are plain
    LaTeX source; WarraqCraft's template loader consumes the same
    "folder of .tex/.sty + metadata" shape, so users can drop in a
-   downloaded Overleaf template and it just opens. A curated subset
-   (LPPL/CC-BY licensed ones) can ship pre-vetted.
+   downloaded Overleaf template and it just opens.
 
 ## Family conventions it inherits
 

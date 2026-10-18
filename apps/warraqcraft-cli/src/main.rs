@@ -208,6 +208,7 @@ const COMMANDS: &[&str] = &[
     "template.list",
     "template.read",
     "template.new",
+    "template.import",
     "project.graph",
     "project.structure",
     "math.preview",

@@ -1,0 +1,7 @@
+name = "German document"
+name_de = "Deutsches Dokument"
+desc = "German article using pdfLaTeX and babel."
+desc_de = "Deutscher Artikel mit pdfLaTeX und babel."
+lang = "de"
+category = "starter"
+engine = "pdflatex"

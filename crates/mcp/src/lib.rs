@@ -71,6 +71,7 @@ const TOOL_COMMANDS: &[(&str, &str)] = &[
     ("template_list", "template.list"),
     ("template_read", "template.read"),
     ("template_new", "template.new"),
+    ("template_import", "template.import"),
     ("project_graph", "project.graph"),
     ("project_structure", "project.structure"),
     ("math_preview", "math.preview"),
@@ -393,6 +394,25 @@ fn tool_list() -> Vec<Value> {
             true,
         ),
         tool(
+            "template_import",
+            "Import a user-selected template file or folder into the per-user gallery (copies text sources only; force replaces an existing imported template).",
+            json!({
+                "path": s("Template source file or folder path."),
+                "id": s("Optional safe template id."),
+                "name": s("Optional display name."),
+                "desc": s("Optional description."),
+                "lang": s("Optional document language code."),
+                "category": s("Optional gallery category."),
+                "engine": s("Optional TeX engine hint."),
+                "license": s("License/provenance text supplied by the user."),
+                "main": s("Optional main .tex path inside a folder template."),
+                "force": { "type": "boolean", "description": "Replace an existing imported template (default false)." },
+            }),
+            &["path"],
+            false,
+            true,
+        ),
+        tool(
             "project_graph",
             "Return the reachable file graph of the open document (sources, resources, unresolved deps).",
             json!({}),
@@ -506,7 +526,7 @@ mod tests {
         let mut s = McpServer::new();
         let r = rpc(&mut s, &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})).unwrap();
         let tools = r["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 22);
+        assert_eq!(tools.len(), 23);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for (name, _) in TOOL_COMMANDS {
             assert!(names.contains(name), "tools/list missing {name}");

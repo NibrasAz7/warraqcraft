@@ -1,0 +1,7 @@
+name = "Latin document"
+name_la = "Documentum Latinum"
+desc = "Latin article using pdfLaTeX and babel."
+desc_la = "Commentarius Latinus cum pdfLaTeX et babel."
+lang = "la"
+category = "starter"
+engine = "pdflatex"

@@ -1,0 +1,7 @@
+name = "Japanese document"
+name_ja = "日本語文書"
+desc = "Japanese article using XeLaTeX and xeCJK."
+desc_ja = "XeLaTeX と xeCJK を使う日本語文書。"
+lang = "ja"
+category = "starter"
+engine = "xelatex"

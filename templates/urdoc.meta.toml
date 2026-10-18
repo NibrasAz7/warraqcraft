@@ -1,0 +1,7 @@
+name = "Urdu document"
+name_ur = "اردو دستاویز"
+desc = "Urdu article using XeLaTeX, fontspec and polyglossia."
+desc_ur = "XeLaTeX، fontspec اور polyglossia کے ساتھ اردو مقالہ۔"
+lang = "ur"
+category = "starter"
+engine = "xelatex"

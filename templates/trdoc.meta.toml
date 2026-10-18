@@ -1,0 +1,7 @@
+name = "Turkish document"
+name_tr = "Türkçe belge"
+desc = "Turkish article using pdfLaTeX and babel."
+desc_tr = "pdfLaTeX ve babel ile Türkçe makale."
+lang = "tr"
+category = "starter"
+engine = "pdflatex"

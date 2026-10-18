@@ -1,0 +1,7 @@
+name = "Chinese document"
+name_zh = "中文文档"
+desc = "Simplified Chinese article using the ctex document class."
+desc_zh = "使用 ctex 文档类的简体中文文章。"
+lang = "zh"
+category = "starter"
+engine = "xelatex"

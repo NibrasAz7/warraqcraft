@@ -1,0 +1,7 @@
+name = "Persian document"
+name_fa = "سند فارسی"
+desc = "Persian article using XeLaTeX, fontspec and polyglossia."
+desc_fa = "مقالهٔ فارسی با XeLaTeX، fontspec و polyglossia."
+lang = "fa"
+category = "starter"
+engine = "xelatex"

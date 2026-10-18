@@ -1,0 +1,7 @@
+name = "Hindi document"
+name_hi = "हिन्दी दस्तावेज़"
+desc = "Hindi article using XeLaTeX, fontspec and polyglossia."
+desc_hi = "XeLaTeX, fontspec और polyglossia के साथ हिन्दी लेख।"
+lang = "hi"
+category = "starter"
+engine = "xelatex"

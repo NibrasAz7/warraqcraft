@@ -1,0 +1,7 @@
+name = "Italian document"
+name_it = "Documento italiano"
+desc = "Italian article using pdfLaTeX and babel."
+desc_it = "Articolo italiano con pdfLaTeX e babel."
+lang = "it"
+category = "starter"
+engine = "pdflatex"

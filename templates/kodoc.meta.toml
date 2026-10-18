@@ -1,0 +1,7 @@
+name = "Korean document"
+name_ko = "한국어 문서"
+desc = "Korean article using XeLaTeX and the koTeX package."
+desc_ko = "XeLaTeX와 koTeX 패키지를 사용하는 한국어 문서."
+lang = "ko"
+category = "starter"
+engine = "xelatex"

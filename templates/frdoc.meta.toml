@@ -1,0 +1,7 @@
+name = "French document"
+name_fr = "Document français"
+desc = "French article using pdfLaTeX and babel."
+desc_fr = "Article français avec pdfLaTeX et babel."
+lang = "fr"
+category = "starter"
+engine = "pdflatex"

@@ -60,6 +60,22 @@ struct Page {
 #[cfg(not(target_arch = "wasm32"))]
 type CompileJob = Result<(CompileReport, Vec<Page>), String>;
 
+/// One template-gallery card, localized for the active UI language.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct TemplateCard {
+    id: String,
+    name: String,
+    desc: String,
+    lang: String,
+    category: String,
+    engine: String,
+    origin: String,
+    license: String,
+    source: String,
+    files: Vec<String>,
+}
+
 /// Preview zoom mode for the PDF pane.
 #[derive(Clone, Copy, PartialEq)]
 enum Zoom {
@@ -375,16 +391,28 @@ pub struct WarraqApp {
     // Persisted preferences (M4): memory-only on wasm.
     settings: PrefsStore,
 
-    /// "New from template" modal: catalog rows `(id, name, desc)` from
-    /// `template.list`, the picked row, and the new file's name.
+    /// "New from template" gallery: `template.list` cards, the picked
+    /// card, search/category state, source preview, and the new file name.
     #[cfg(not(target_arch = "wasm32"))]
     tpl_open: bool,
     #[cfg(not(target_arch = "wasm32"))]
-    tpls: Vec<(String, String, String, String)>,
+    tpls: Vec<TemplateCard>,
     #[cfg(not(target_arch = "wasm32"))]
     tpl_sel: Option<usize>,
     #[cfg(not(target_arch = "wasm32"))]
     tpl_name: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    tpl_filter: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    tpl_category: Option<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    tpl_language: Option<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    tpl_preview: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    tpl_preview_for: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    tpl_license: String,
 
     /// Local-history window: `snapshot.list` rows `(id, ts, label,
     /// files)`, a pending restore id awaiting its second click, and the
@@ -484,6 +512,18 @@ impl WarraqApp {
             tpl_sel: None,
             #[cfg(not(target_arch = "wasm32"))]
             tpl_name: String::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            tpl_filter: String::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            tpl_category: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            tpl_language: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            tpl_preview: String::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            tpl_preview_for: String::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            tpl_license: String::new(),
             #[cfg(not(target_arch = "wasm32"))]
             hist_open: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1450,6 +1490,11 @@ impl WarraqApp {
                         self.load_templates();
                         self.tpl_sel = None;
                         self.tpl_name.clear();
+                        self.tpl_filter.clear();
+                        self.tpl_category = None;
+                        self.tpl_language = None;
+                        self.tpl_preview.clear();
+                        self.tpl_preview_for.clear();
                         self.tpl_open = true;
                     }
                     ui.add_space(4.0);
@@ -2366,6 +2411,37 @@ impl WarraqApp {
         }
     }
 
+    /// Whether a gallery card matches the search text and active chips.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn template_card_matches(card: &TemplateCard, query: &str, category: Option<&str>, language: Option<&str>) -> bool {
+        let category = category.unwrap_or_default();
+        let card_category = if card.category.is_empty() { "general" } else { card.category.as_str() };
+        if !category.is_empty() && card_category != category {
+            return false;
+        }
+        if language.is_some_and(|l| !l.is_empty() && card.lang != l) {
+            return false;
+        }
+        if query.is_empty() {
+            return true;
+        }
+        [card.id.as_str(), card.name.as_str(), card.desc.as_str(), card.lang.as_str(), card.engine.as_str(), card_category]
+            .iter()
+            .any(|part| part.to_lowercase().contains(query))
+    }
+
+    /// Indices of cards visible under the current filter/category.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn visible_templates(&self) -> Vec<usize> {
+        let query = self.tpl_filter.trim().to_lowercase();
+        self.tpls
+            .iter()
+            .enumerate()
+            .filter(|(_, card)| Self::template_card_matches(card, &query, self.tpl_category.as_deref(), self.tpl_language.as_deref()))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     /// Refresh the template catalog (engine `template.list`).
     #[cfg(not(target_arch = "wasm32"))]
     fn load_templates(&mut self) {
@@ -2381,12 +2457,21 @@ impl WarraqApp {
                             // Localized name/desc override when the meta
                             // ships one for the active UI language.
                             let loc = &t["localized"][lang];
-                            (
-                                t["id"].as_str().unwrap_or_default().to_string(),
-                                loc["name"].as_str().filter(|n| !n.is_empty()).or_else(|| t["name"].as_str()).unwrap_or_default().to_string(),
-                                loc["desc"].as_str().filter(|d| !d.is_empty()).or_else(|| t["desc"].as_str()).unwrap_or_default().to_string(),
-                                t["lang"].as_str().unwrap_or_default().to_string(),
-                            )
+                            TemplateCard {
+                                id: t["id"].as_str().unwrap_or_default().to_string(),
+                                name: loc["name"].as_str().filter(|n| !n.is_empty()).or_else(|| t["name"].as_str()).unwrap_or_default().to_string(),
+                                desc: loc["desc"].as_str().filter(|d| !d.is_empty()).or_else(|| t["desc"].as_str()).unwrap_or_default().to_string(),
+                                lang: t["lang"].as_str().unwrap_or_default().to_string(),
+                                category: t["category"].as_str().unwrap_or("general").to_string(),
+                                engine: t["engine"].as_str().unwrap_or_default().to_string(),
+                                origin: t["origin"].as_str().unwrap_or("bundled").to_string(),
+                                license: t["license"].as_str().unwrap_or_default().to_string(),
+                                source: t["source"].as_str().unwrap_or_default().to_string(),
+                                files: t["files"]
+                                    .as_array()
+                                    .map(|f| f.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                                    .unwrap_or_default(),
+                            }
                         })
                         .collect()
                 })
@@ -2394,8 +2479,41 @@ impl WarraqApp {
             .unwrap_or_default();
     }
 
-    /// Modal: pick a template, name the file, create it in the project
-    /// root via `template.new`, then open it.
+    /// Load the selected template's main source for the preview pane.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_template_preview(&mut self, id: &str) {
+        if self.tpl_preview_for == id {
+            return;
+        }
+        self.tpl_preview = self
+            .session
+            .execute("template.read", &serde_json::json!({"id": id}))
+            .ok()
+            .and_then(|v| v["content"].as_str().map(str::to_string))
+            .unwrap_or_default();
+        self.tpl_preview_for = id.to_string();
+    }
+
+    /// Copy a user-selected folder into the per-user gallery. The engine
+    /// filters this to text sources and records provenance metadata.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn import_template_folder(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+            match self.session.execute(
+                "template.import",
+                &serde_json::json!({"path": path.display().to_string(), "category": "community", "license": self.tpl_license.trim()}),
+            ) {
+                Ok(v) => {
+                    self.status = format!("imported {} — {} file(s)", v["id"].as_str().unwrap_or("template"), v["files"].as_i64().unwrap_or(0));
+                    self.load_templates();
+                }
+                Err(e) => self.status = format!("template.import: {e}"),
+            }
+        }
+    }
+
+    /// Modal gallery: searchable cards on the left, metadata + source
+    /// preview on the right, and a filename row for `template.new`.
     #[cfg(not(target_arch = "wasm32"))]
     fn tpl_modal(&mut self, ctx: &egui::Context) {
         if !self.tpl_open {
@@ -2405,37 +2523,179 @@ impl WarraqApp {
         let mut sel = self.tpl_sel;
         let mut create = false;
         let mut close = false;
+        let mut import = false;
+        let mut picked = false;
+        let visible = self.visible_templates();
+        if sel.is_none() || sel.is_some_and(|i| !visible.contains(&i)) {
+            sel = visible.first().copied();
+            picked = sel.is_some();
+        }
+        if !ctx.egui_wants_keyboard_input() && !visible.is_empty() {
+            let pos = sel.and_then(|i| visible.iter().position(|v| *v == i));
+            if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                sel = Some(visible[pos.map_or(0, |p| (p + 1) % visible.len())]);
+                picked = true;
+            } else if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                sel = Some(visible[pos.map_or(visible.len() - 1, |p| p.saturating_sub(1))]);
+                picked = true;
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                create = sel.is_some();
+            }
+        }
+        let categories =
+            self.tpls.iter().map(|t| if t.category.is_empty() { "general".to_string() } else { t.category.clone() }).collect::<BTreeSet<_>>();
+        let languages = self.tpls.iter().filter(|t| !t.lang.is_empty()).map(|t| t.lang.clone()).collect::<BTreeSet<_>>();
+
         egui::Window::new(lang::view(s.tpl_title))
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
+            .default_size([880.0, 560.0])
+            .min_size([760.0, 480.0])
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.tpl_filter).hint_text(lang::view(s.tpl_search_hint)).desired_width(230.0));
+                    import = ui.button(lang::view(s.tpl_import)).clicked();
+                    ui.add(egui::TextEdit::singleline(&mut self.tpl_license).hint_text(lang::view(s.tpl_license_hint)).desired_width(190.0));
+                });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.selectable_label(self.tpl_category.is_none(), lang::view(s.tpl_all)).clicked() {
+                        self.tpl_category = None;
+                    }
+                    for category in &categories {
+                        if ui.selectable_label(self.tpl_category.as_deref() == Some(category.as_str()), category).clicked() {
+                            self.tpl_category = Some(category.clone());
+                        }
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(lang::view(s.language)).size(10.0).color(theme::pal().muted));
+                    if ui.selectable_label(self.tpl_language.is_none(), lang::view(s.tpl_all)).clicked() {
+                        self.tpl_language = None;
+                    }
+                    for language in &languages {
+                        if ui.selectable_label(self.tpl_language.as_deref() == Some(language.as_str()), language).clicked() {
+                            self.tpl_language = Some(language.clone());
+                        }
+                    }
+                });
+                ui.separator();
                 if self.tpls.is_empty() {
                     ui.label(egui::RichText::new(lang::view(s.tpl_none)).size(11.0).color(theme::pal().muted));
                 }
-                egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-                    for (i, (id, name, desc, lang)) in self.tpls.iter().enumerate() {
-                        let badge = if lang.is_empty() { String::new() } else { format!("  [{lang}]") };
-                        if ui.selectable_label(sel == Some(i), lang::view(&format!("{name}  ({id}){badge}"))).clicked() {
-                            sel = Some(i);
-                            if self.tpl_name.is_empty() {
-                                self.tpl_name = format!("{id}.tex");
-                            }
-                        }
-                        ui.label(egui::RichText::new(lang::view(desc)).size(9.5).color(theme::pal().muted));
-                    }
-                });
-                ui.add(egui::TextEdit::singleline(&mut self.tpl_name).hint_text(lang::view(s.file_name_hint)).desired_width(240.0));
                 ui.horizontal(|ui| {
-                    create = ui.add_enabled(sel.is_some() && !self.tpl_name.trim().is_empty(), egui::Button::new(lang::view(s.create))).clicked();
+                    ui.set_min_height(330.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(410.0);
+                        egui::ScrollArea::vertical().id_salt("tpl_cards").auto_shrink([false, false]).show(ui, |ui| {
+                            egui::Grid::new("tpl_cards_grid").num_columns(2).spacing([7.0, 7.0]).show(ui, |ui| {
+                                for (row, i) in visible.iter().copied().enumerate() {
+                                    let Some(card) = self.tpls.get(i) else { continue };
+                                    let selected = sel == Some(i);
+                                    let card_ui = egui::Frame::new()
+                                        .fill(if selected { theme::pal().selected } else { theme::pal().raised })
+                                        .stroke(egui::Stroke::new(
+                                            if selected { 1.5 } else { 1.0 },
+                                            if selected { theme::pal().accent } else { theme::pal().border },
+                                        ))
+                                        .corner_radius(6.0)
+                                        .inner_margin(egui::Margin::same(8))
+                                        .show(ui, |ui| {
+                                            ui.set_width(182.0);
+                                            ui.label(
+                                                egui::RichText::new(lang::view(if card.name.is_empty() { &card.id } else { &card.name }))
+                                                    .size(12.5)
+                                                    .strong(),
+                                            );
+                                            ui.horizontal_wrapped(|ui| {
+                                                if !card.lang.is_empty() {
+                                                    ui.label(
+                                                        egui::RichText::new(format!("[{}]", card.lang)).size(9.0).color(theme::pal().accent_dim),
+                                                    );
+                                                }
+                                                ui.label(
+                                                    egui::RichText::new(if card.category.is_empty() { "general" } else { &card.category })
+                                                        .size(9.0)
+                                                        .color(theme::pal().muted),
+                                                );
+                                                if !card.engine.is_empty() {
+                                                    ui.label(egui::RichText::new(&card.engine).size(9.0).color(theme::pal().muted));
+                                                }
+                                            });
+                                            ui.label(egui::RichText::new(lang::view(&card.desc)).size(9.5).color(theme::pal().muted));
+                                            let origin = if card.origin == "user" { s.tpl_imported } else { s.tpl_bundled };
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{origin} · {}",
+                                                    lang::fmt(s.tpl_files, &[("n", &card.files.len().to_string())])
+                                                ))
+                                                .size(8.5)
+                                                .color(theme::pal().faint),
+                                            );
+                                        });
+                                    if card_ui.response.interact(egui::Sense::click()).clicked() {
+                                        sel = Some(i);
+                                        picked = true;
+                                    }
+                                    if row % 2 == 1 {
+                                        ui.end_row();
+                                    }
+                                }
+                                if visible.len() % 2 == 1 {
+                                    ui.end_row();
+                                }
+                            });
+                        });
+                    });
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        ui.set_min_width(290.0);
+                        ui.label(egui::RichText::new(lang::view(s.tpl_preview)).size(10.0).color(theme::pal().muted));
+                        if let Some(card) = sel.and_then(|i| self.tpls.get(i)) {
+                            ui.label(egui::RichText::new(lang::view(if card.name.is_empty() { &card.id } else { &card.name })).size(12.0).strong());
+                            ui.horizontal_wrapped(|ui| {
+                                for badge in [card.lang.as_str(), card.category.as_str(), card.engine.as_str()] {
+                                    if !badge.is_empty() {
+                                        ui.label(egui::RichText::new(badge).size(9.0).color(theme::pal().accent_dim));
+                                    }
+                                }
+                            });
+                            if !card.license.is_empty() || !card.source.is_empty() {
+                                ui.label(egui::RichText::new(format!("{} {}", card.license, card.source)).size(8.5).color(theme::pal().muted));
+                            }
+                            egui::ScrollArea::vertical().id_salt("tpl_source").auto_shrink([false, false]).show(ui, |ui| {
+                                ui.label(egui::RichText::new(&self.tpl_preview).size(9.0).monospace());
+                            });
+                        }
+                    });
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.tpl_name).hint_text(lang::view(s.file_name_hint)).desired_width(260.0));
+                    let can_create = sel.is_some_and(|i| visible.contains(&i)) && !self.tpl_name.trim().is_empty();
+                    create |= ui.add_enabled(can_create, egui::Button::new(lang::view(s.create))).clicked();
                     close = ui.button(lang::view(s.cancel)).clicked();
                 });
             });
+
         self.tpl_sel = sel;
+        if picked {
+            if let Some(card) = sel.and_then(|i| self.tpls.get(i)) {
+                self.tpl_name = format!("{}.tex", card.id);
+                let id = card.id.clone();
+                self.load_template_preview(&id);
+            }
+        }
+        if import {
+            self.import_template_folder();
+        }
         if create {
-            if let Some((id, _, _, _)) = self.tpl_sel.and_then(|i| self.tpls.get(i)) {
+            if let Some(card) = self.tpl_sel.and_then(|i| self.tpls.get(i)) {
+                if self.tpl_name.trim().is_empty() {
+                    self.tpl_name = format!("{}.tex", card.id);
+                }
                 let path = self.project_root().join(self.tpl_name.trim());
-                match self.session.execute("template.new", &serde_json::json!({"id": id, "path": path.display().to_string()})) {
+                match self.session.execute("template.new", &serde_json::json!({"id": card.id, "path": path.display().to_string()})) {
                     Ok(_) => {
                         self.tree_scanned_at = f64::NEG_INFINITY;
                         self.open_path(path);
@@ -3260,6 +3520,25 @@ mod tests {
             assert_eq!(PageMode::from_pref(m.pref()), m);
         }
         assert_eq!(PageMode::from_pref("nonsense"), PageMode::Scroll);
+    }
+
+    /// Gallery search covers localized metadata and respects the chip.
+    #[test]
+    fn template_filter_matches_metadata() {
+        let card = TemplateCard {
+            id: "arabdoc".into(),
+            name: "Arabic document".into(),
+            desc: "RTL starter".into(),
+            lang: "ar".into(),
+            category: "academic".into(),
+            engine: "xelatex".into(),
+            ..TemplateCard::default()
+        };
+        assert!(WarraqApp::template_card_matches(&card, "rtl", None, None));
+        assert!(WarraqApp::template_card_matches(&card, "xelatex", Some("academic"), Some("ar")));
+        assert!(!WarraqApp::template_card_matches(&card, "rtl", Some("legal"), None));
+        assert!(!WarraqApp::template_card_matches(&card, "rtl", None, Some("fa")));
+        assert!(!WarraqApp::template_card_matches(&card, "missing", None, None));
     }
 }
 
