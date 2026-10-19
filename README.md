@@ -171,11 +171,16 @@ custom OpenAI-compatible endpoints only need endpoint/model plus a
 session-only token. Headless agents can use `ai.providers`, `ai.probe`
 and `ai.ask` through the CLI/control/MCP command surface.
 
-The full AI harness is still planned separately: memory, task system,
-system prompt, command permissions, orchestration and safety
-boundaries. The application remains fully useful with AI disabled.
+The M7.1 native harness core adds durable tasks, scoped inspectable
+memory, versioned prompts/guardrails, an inspectable command permission
+matrix, fail-closed plan previews and a bounded redacted audit log. The
+same `ai.task.*`, `ai.memory.*`, `ai.permissions`, `ai.plan.preview`,
+`ai.prompt.*` and `ai.audit.list` commands are available through the GUI,
+CLI, control channel and MCP. The application remains fully useful with
+AI disabled.
 
-The harness plan lives in [`docs/AI-HARNESS.md`](docs/AI-HARNESS.md).
+The harness design and status live in
+[`docs/AI-HARNESS.md`](docs/AI-HARNESS.md).
 
 ## Clean-room and licensing rules
 

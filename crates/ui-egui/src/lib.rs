@@ -30,6 +30,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use egui::text::{CCursor, CCursorRange};
+use serde_json::Value;
 use texparse::DocStructure;
 use warraqcraft_engine::{CompileReport, EngineError, Session};
 
@@ -545,6 +546,8 @@ pub struct WarraqApp {
     prev_src: String,
     /// AI assist panel state (BYO provider; native does the network).
     ai: ai::AiPanel,
+    /// Durable AI harness inspector (tasks, memory, plans, audit).
+    harness: ai::HarnessPanel,
     /// Document-statistics window.
     stats_open: bool,
     /// Preferences window.
@@ -683,6 +686,7 @@ impl WarraqApp {
             mirrors: None,
             prev_src: String::new(),
             ai: ai::AiPanel::new(),
+            harness: ai::HarnessPanel::new(),
             stats_open: false,
             settings_open: false,
             shortcuts_open: false,
@@ -2075,6 +2079,9 @@ impl WarraqApp {
                     #[cfg(not(target_arch = "wasm32"))]
                     if ui.selectable_label(self.ai.open, lang::view(s.ai)).on_hover_text(lang::view(s.ai_hint).into_owned()).clicked() {
                         self.ai.open = !self.ai.open;
+                        if self.ai.open {
+                            self.harness.needs_refresh = true;
+                        }
                     }
                     if cite::cite_button(ui, s.cite).clicked() {
                         self.open_cite(ui.ctx());
@@ -3807,6 +3814,8 @@ impl WarraqApp {
                         ui.label(egui::RichText::new(&self.ai.response).size(11.0));
                     });
                 }
+                ui.separator();
+                self.harness_section(ui);
             });
         self.ai.open = open;
         if probe {
@@ -3820,6 +3829,196 @@ impl WarraqApp {
         }
         if ask {
             self.ai.ask(self.session.source());
+        }
+    }
+
+    /// Harness inspector inside the AI window. It is intentionally thin:
+    /// every action calls the engine command surface, so GUI, CLI,
+    /// control and MCP share the same durable state and policy.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn harness_section(&mut self, ui: &mut egui::Ui) {
+        if self.harness.needs_refresh {
+            self.harness.refresh(&mut self.session);
+        }
+        enum Action {
+            None,
+            Refresh,
+            CreateTask,
+            SelectTask(String),
+            ApproveTask(bool),
+            CancelTask,
+            PreviewPlan,
+            MemoryScope(&'static str),
+            MemorySet,
+            MemoryDelete(String),
+        }
+        let mut action = Action::None;
+        let s = self.s();
+
+        egui::CollapsingHeader::new(lang::view(s.ai_tasks)).default_open(true).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.harness.task_title).hint_text(lang::view(s.ai_task_title)).desired_width(160.0));
+                if ui.button(lang::view(s.create)).clicked() {
+                    action = Action::CreateTask;
+                }
+                if ui.button(lang::view(s.repo_refresh)).clicked() {
+                    action = Action::Refresh;
+                }
+            });
+            egui::ScrollArea::vertical().id_salt("ai_task_prompt").max_height(54.0).show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.harness.task_prompt)
+                        .hint_text(lang::view(s.ai_task_prompt))
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(2),
+                );
+            });
+            egui::ScrollArea::vertical().id_salt("ai_tasks").max_height(96.0).show(ui, |ui| {
+                if self.harness.tasks.is_empty() {
+                    ui.label(egui::RichText::new(lang::view(s.ai_task_none)).size(10.5).color(theme::pal().muted));
+                }
+                for task in self.harness.tasks.clone() {
+                    let id = task.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                    let title = task.get("title").and_then(Value::as_str).unwrap_or("task").to_string();
+                    let state = task.get("state").and_then(Value::as_str).unwrap_or("draft").to_string();
+                    let selected = self.harness.selected_task == id;
+                    if ui.selectable_label(selected, lang::view(&format!("{title} — {state}"))).clicked() {
+                        action = Action::SelectTask(id);
+                    }
+                }
+            });
+            if let Some(task) = self.harness.task_detail.clone() {
+                let state = task.get("state").and_then(Value::as_str).unwrap_or("draft").to_string();
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(&state).size(10.5).color(theme::pal().muted));
+                    if state == "waiting_approval" {
+                        if ui.button(lang::view(s.ai_approve)).clicked() {
+                            action = Action::ApproveTask(true);
+                        }
+                        if ui.button(lang::view(s.ai_reject)).clicked() {
+                            action = Action::ApproveTask(false);
+                        }
+                    }
+                    if !matches!(state.as_str(), "completed" | "failed" | "cancelled") && ui.button(lang::view(s.ai_task_cancel)).clicked() {
+                        action = Action::CancelTask;
+                    }
+                });
+            }
+        });
+
+        egui::CollapsingHeader::new(lang::view(s.ai_plan)).default_open(false).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("ai_plan_json").max_height(76.0).show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.harness.plan_json)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(4)
+                        .font(egui::TextStyle::Monospace),
+                );
+            });
+            if ui.button(lang::view(s.ai_plan_preview)).clicked() {
+                action = Action::PreviewPlan;
+            }
+            if let Some(result) = &self.harness.plan_result {
+                let plan = result.get("plan").cloned().unwrap_or_else(|| result.clone());
+                let needs = plan.get("requires_approval").and_then(Value::as_bool).unwrap_or(false);
+                ui.label(
+                    egui::RichText::new(if needs { lang::view(s.ai_approval_needed) } else { lang::view(s.ai_plan_read_only) })
+                        .size(10.5)
+                        .color(if needs { theme::pal().warn } else { theme::pal().accent_dim }),
+                );
+                for command in plan.get("commands").and_then(Value::as_array).cloned().unwrap_or_default() {
+                    let name = command.get("command").and_then(Value::as_str).unwrap_or_default();
+                    let tier = command.get("tier").and_then(Value::as_str).unwrap_or_default();
+                    ui.label(egui::RichText::new(format!("{name} — {tier}")).size(10.0).monospace());
+                }
+            }
+        });
+
+        egui::CollapsingHeader::new(lang::view(s.ai_permissions)).default_open(false).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("ai_permissions").max_height(110.0).show(ui, |ui| {
+                for policy in &self.harness.permissions {
+                    let command = policy.get("command").and_then(Value::as_str).unwrap_or_default();
+                    let tier = policy.get("tier").and_then(Value::as_str).unwrap_or_default();
+                    let approval = policy.get("approval_required").and_then(Value::as_bool).unwrap_or(false);
+                    let text = if approval {
+                        format!("{command} — {tier} ({})", lang::view(s.ai_approval_needed))
+                    } else {
+                        format!("{command} — {tier}")
+                    };
+                    ui.label(egui::RichText::new(text).size(10.0).monospace());
+                }
+            });
+        });
+
+        egui::CollapsingHeader::new(lang::view(s.ai_memory)).default_open(false).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(lang::view(s.ai_memory_scope)).size(10.5).color(theme::pal().muted));
+                egui::ComboBox::from_id_salt("ai_memory_scope").selected_text(lang::view(&self.harness.memory_scope)).show_ui(ui, |ui| {
+                    for scope in ["session", "project", "task", "user"] {
+                        if ui.selectable_label(self.harness.memory_scope == scope, lang::view(scope)).clicked() {
+                            action = Action::MemoryScope(scope);
+                        }
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.harness.memory_key).hint_text(lang::view(s.ai_memory_key)).desired_width(110.0));
+                ui.add(egui::TextEdit::singleline(&mut self.harness.memory_value).hint_text(lang::view(s.ai_memory_value)).desired_width(190.0));
+                ui.checkbox(&mut self.harness.memory_pinned, lang::view(s.ai_pinned));
+                if ui.button(lang::view(s.ai_memory_set)).clicked() {
+                    action = Action::MemorySet;
+                }
+            });
+            egui::ScrollArea::vertical().id_salt("ai_memory").max_height(92.0).show(ui, |ui| {
+                for entry in self.harness.memory_entries.clone() {
+                    let key = entry.get("key").and_then(Value::as_str).unwrap_or_default().to_string();
+                    let pinned = entry.get("pinned").and_then(Value::as_bool).unwrap_or(false);
+                    let value = entry.get("value").map(Value::to_string).unwrap_or_default();
+                    let value = value.chars().take(72).collect::<String>();
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("{}{key}: {value}", if pinned { "★ " } else { "" })).size(10.0).monospace());
+                        if ui.small_button(lang::view(s.ai_delete)).clicked() {
+                            action = Action::MemoryDelete(key);
+                        }
+                    });
+                }
+            });
+        });
+
+        egui::CollapsingHeader::new(lang::view(s.ai_prompts)).default_open(false).show(ui, |ui| {
+            for prompt in &self.harness.prompts {
+                let id = prompt.get("id").and_then(Value::as_str).unwrap_or_default();
+                let version = prompt.get("version").and_then(Value::as_str).unwrap_or_default();
+                let source = prompt.get("source").and_then(Value::as_str).unwrap_or_default();
+                ui.label(egui::RichText::new(format!("{id} — {version} ({source})")).size(10.0).monospace());
+            }
+        });
+
+        egui::CollapsingHeader::new(lang::view(s.ai_audit)).default_open(false).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("ai_audit").max_height(90.0).show(ui, |ui| {
+                for event in &self.harness.audit {
+                    let command = event.get("command").and_then(Value::as_str).unwrap_or_default();
+                    let tier = event.get("tier").and_then(Value::as_str).unwrap_or_default();
+                    let ok = event.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                    ui.label(egui::RichText::new(format!("{} {command} — {tier}", if ok { "ok" } else { "err" })).size(10.0).monospace());
+                }
+            });
+        });
+        if !self.harness.status.is_empty() {
+            ui.label(egui::RichText::new(&self.harness.status).size(10.5).color(theme::pal().error));
+        }
+
+        match action {
+            Action::None => {}
+            Action::Refresh => self.harness.needs_refresh = true,
+            Action::CreateTask => self.harness.create_task(&mut self.session),
+            Action::SelectTask(id) => self.harness.select_task(&mut self.session, &id),
+            Action::ApproveTask(approve) => self.harness.approve_task(&mut self.session, approve),
+            Action::CancelTask => self.harness.cancel_task(&mut self.session),
+            Action::PreviewPlan => self.harness.preview_plan(&mut self.session),
+            Action::MemoryScope(scope) => self.harness.set_memory_scope(&mut self.session, scope),
+            Action::MemorySet => self.harness.set_memory(&mut self.session),
+            Action::MemoryDelete(key) => self.harness.delete_memory(&mut self.session, &key),
         }
     }
 

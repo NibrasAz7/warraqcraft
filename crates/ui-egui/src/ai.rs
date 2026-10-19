@@ -22,6 +22,9 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
+use serde_json::{json, Value};
+use warraqcraft_engine::Session;
+
 #[cfg(not(target_arch = "wasm32"))]
 use craft_ai::{Provider, ProviderInfo};
 
@@ -276,6 +279,225 @@ impl AiPanel {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Default for AiPanel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Inspectable native AI harness state shown under the provider panel.
+/// All reads/writes go through `Session::execute`, so the GUI sees the
+/// same durable store and safety policy as CLI/control/MCP callers.
+pub struct HarnessPanel {
+    pub tasks: Vec<Value>,
+    pub selected_task: String,
+    pub task_detail: Option<Value>,
+    pub task_title: String,
+    pub task_prompt: String,
+    pub memory_scope: String,
+    pub memory_key: String,
+    pub memory_value: String,
+    pub memory_pinned: bool,
+    pub memory_entries: Vec<Value>,
+    pub plan_json: String,
+    pub plan_result: Option<Value>,
+    pub permissions: Vec<Value>,
+    pub prompts: Vec<Value>,
+    pub audit: Vec<Value>,
+    pub status: String,
+    pub needs_refresh: bool,
+}
+
+impl HarnessPanel {
+    pub fn new() -> Self {
+        Self {
+            tasks: Vec::new(),
+            selected_task: String::new(),
+            task_detail: None,
+            task_title: String::new(),
+            task_prompt: String::new(),
+            memory_scope: "project".into(),
+            memory_key: String::new(),
+            memory_value: String::new(),
+            memory_pinned: false,
+            memory_entries: Vec::new(),
+            plan_json: "[\n  { \"command\": \"source.get\" }\n]".into(),
+            plan_result: None,
+            permissions: Vec::new(),
+            prompts: Vec::new(),
+            audit: Vec::new(),
+            status: String::new(),
+            needs_refresh: true,
+        }
+    }
+
+    /// Refresh the read-only sections. Local JSON reads stay synchronous;
+    /// they are capped and cheap compared with provider requests.
+    pub fn refresh(&mut self, session: &mut Session) {
+        self.needs_refresh = false;
+        self.status.clear();
+        if let Err(e) = self.refresh_inner(session) {
+            self.status = e;
+        }
+    }
+
+    fn refresh_inner(&mut self, session: &mut Session) -> Result<(), String> {
+        self.tasks = Self::execute(session, "ai.task.list", json!({"limit": 100}))?["tasks"].as_array().cloned().unwrap_or_default();
+        self.permissions = Self::execute(session, "ai.permissions", json!({}))?["commands"].as_array().cloned().unwrap_or_default();
+        self.prompts = Self::execute(session, "ai.prompt.list", json!({}))?["prompts"].as_array().cloned().unwrap_or_default();
+        self.audit = Self::execute(session, "ai.audit.list", json!({"limit": 50}))?["events"].as_array().cloned().unwrap_or_default();
+        self.refresh_memory(session)?;
+        if !self.selected_task.is_empty() {
+            self.task_detail =
+                Self::execute(session, "ai.task.get", json!({"task_id": self.selected_task})).ok().and_then(|v| v.get("task").cloned());
+        }
+        Ok(())
+    }
+
+    pub fn create_task(&mut self, session: &mut Session) {
+        let title = self.task_title.trim();
+        let prompt = self.task_prompt.trim();
+        if title.is_empty() && prompt.is_empty() {
+            self.status = "task needs a title or prompt".into();
+            return;
+        }
+        match Self::execute(session, "ai.task.create", json!({"title": title, "prompt": prompt, "owner": "ui"})) {
+            Ok(v) => {
+                self.selected_task = v.get("task_id").and_then(Value::as_str).unwrap_or_default().to_string();
+                self.task_detail = v.get("task").cloned();
+                self.task_title.clear();
+                self.task_prompt.clear();
+                self.needs_refresh = true;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    pub fn select_task(&mut self, session: &mut Session, id: &str) {
+        self.selected_task = id.to_string();
+        self.task_detail = Self::execute(session, "ai.task.get", json!({"task_id": id})).ok().and_then(|v| v.get("task").cloned());
+        if self.memory_scope == "task" {
+            let _ = self.refresh_memory(session);
+        }
+    }
+
+    pub fn approve_task(&mut self, session: &mut Session, approve: bool) {
+        if self.selected_task.is_empty() {
+            return;
+        }
+        match Self::execute(session, "ai.task.approve", json!({"task_id": self.selected_task, "approve": approve})) {
+            Ok(v) => {
+                self.task_detail = v.get("task").cloned();
+                self.needs_refresh = true;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    pub fn cancel_task(&mut self, session: &mut Session) {
+        if self.selected_task.is_empty() {
+            return;
+        }
+        match Self::execute(session, "ai.task.cancel", json!({"task_id": self.selected_task, "reason": "cancelled from AI panel"})) {
+            Ok(v) => {
+                self.task_detail = v.get("task").cloned();
+                self.needs_refresh = true;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    pub fn preview_plan(&mut self, session: &mut Session) {
+        let parsed: Result<Value, _> = serde_json::from_str(&self.plan_json);
+        let mut params = match parsed {
+            Ok(Value::Array(commands)) => json!({"commands": commands}),
+            Ok(v) => v,
+            Err(e) => {
+                self.status = format!("invalid plan JSON: {e}");
+                return;
+            }
+        };
+        if params.get("commands").is_none() {
+            self.status = "plan JSON needs a commands array".into();
+            return;
+        }
+        if !self.selected_task.is_empty() && params.get("task_id").is_none() {
+            params["task_id"] = Value::from(self.selected_task.clone());
+        }
+        match Self::execute(session, "ai.plan.preview", params) {
+            Ok(v) => {
+                self.plan_result = Some(v.clone());
+                self.task_detail = v.get("task").cloned().or(self.task_detail.take());
+                self.needs_refresh = true;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    pub fn set_memory_scope(&mut self, session: &mut Session, scope: &str) {
+        self.memory_scope = scope.to_string();
+        if let Err(e) = self.refresh_memory(session) {
+            self.status = e;
+        }
+    }
+
+    pub fn refresh_memory(&mut self, session: &mut Session) -> Result<(), String> {
+        let mut params = json!({"scope": self.memory_scope});
+        if self.memory_scope == "task" {
+            if self.selected_task.is_empty() {
+                self.memory_entries.clear();
+                return Ok(());
+            }
+            params["task_id"] = Value::from(self.selected_task.clone());
+        }
+        self.memory_entries = Self::execute(session, "ai.memory.list", params)?["entries"].as_array().cloned().unwrap_or_default();
+        Ok(())
+    }
+
+    pub fn set_memory(&mut self, session: &mut Session) {
+        let key = self.memory_key.trim();
+        if key.is_empty() {
+            self.status = "memory needs a key".into();
+            return;
+        }
+        let value = serde_json::from_str::<Value>(&self.memory_value).unwrap_or_else(|_| Value::from(self.memory_value.clone()));
+        let mut params = json!({"scope": self.memory_scope, "key": key, "value": value, "source": "ui", "pinned": self.memory_pinned});
+        if self.memory_scope == "task" {
+            if self.selected_task.is_empty() {
+                self.status = "select a task first".into();
+                return;
+            }
+            params["task_id"] = Value::from(self.selected_task.clone());
+        }
+        match Self::execute(session, "ai.memory.set", params) {
+            Ok(_) => {
+                self.memory_key.clear();
+                self.memory_value.clear();
+                self.needs_refresh = true;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    pub fn delete_memory(&mut self, session: &mut Session, key: &str) {
+        let mut params = json!({"scope": self.memory_scope, "key": key});
+        if self.memory_scope == "task" {
+            if self.selected_task.is_empty() {
+                return;
+            }
+            params["task_id"] = Value::from(self.selected_task.clone());
+        }
+        match Self::execute(session, "ai.memory.delete", params) {
+            Ok(_) => self.needs_refresh = true,
+            Err(e) => self.status = e,
+        }
+    }
+
+    fn execute(session: &mut Session, command: &str, params: Value) -> Result<Value, String> {
+        session.execute(command, &params).map_err(|e| e.to_string())
+    }
+}
+
+impl Default for HarnessPanel {
     fn default() -> Self {
         Self::new()
     }

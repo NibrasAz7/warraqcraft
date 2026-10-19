@@ -257,7 +257,7 @@ pub fn status(session: &Session, params: &Value) -> Result<Value, EngineError> {
         (0, 0)
     };
 
-    let status_out = git_ok(&root, &["status", "--porcelain=v1", "-z"], t)?;
+    let status_out = git_ok(&root, &["status", "--porcelain=v1", "-z", "--", ".", ":(exclude).warraqcraft", ":(exclude).texcraft"], t)?;
     let mut changes = Vec::new();
     let mut staged = 0usize;
     let mut modified = 0usize;
@@ -416,7 +416,7 @@ pub fn commit(session: &Session, params: &Value) -> Result<Value, EngineError> {
         return Err(EngineError::BadParam("message"));
     }
     if params.get("stage").and_then(Value::as_bool).unwrap_or(false) {
-        git_ok(&root, &["add", "-A"], t)?;
+        git_ok(&root, &["add", "-A", "--", ".", ":(exclude).warraqcraft", ":(exclude).texcraft"], t)?;
     }
     let out = git_ok(&root, &["commit", "-m", message], t)?;
     Ok(json!({"ok": true, "root": root.display().to_string(), "output": redact_credentials(&text(&out))}))

@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
@@ -28,6 +29,7 @@ use serde_json::{json, Value};
 use texparse::{parse_magic, parse_structure, DocStructure};
 
 pub mod ai;
+pub mod ai_harness;
 pub mod history;
 pub mod preview;
 pub mod project;
@@ -42,6 +44,64 @@ pub use tools::UserTool;
 /// Hidden build directory next to the document (`.aux`/`.log`/`.pdf`,
 /// `snapshots/`).
 pub(crate) const BUILD_DIR: &str = ".warraqcraft";
+
+/// Canonical engine command ids exposed by `Session::execute`. External
+/// surfaces derive listings and policy checks from this list.
+pub const COMMANDS: &[&str] = &[
+    "document.new",
+    "document.open",
+    "document.save",
+    "document.disk_state",
+    "document.compile",
+    "source.set",
+    "source.get",
+    "structure.get",
+    "magic.get",
+    "user_tool.list",
+    "user_tool.set",
+    "user_tool.run",
+    "user_tool.clear",
+    "template.list",
+    "template.read",
+    "template.new",
+    "template.import",
+    "project.graph",
+    "project.structure",
+    "repo.status",
+    "repo.init",
+    "repo.remote",
+    "repo.pull",
+    "repo.push",
+    "repo.commit",
+    "repo.branches",
+    "repo.conflicts",
+    "repo.history",
+    "ai.providers",
+    "ai.probe",
+    "ai.ask",
+    "ai.task.create",
+    "ai.task.list",
+    "ai.task.get",
+    "ai.task.update",
+    "ai.task.cancel",
+    "ai.task.approve",
+    "ai.memory.list",
+    "ai.memory.set",
+    "ai.memory.delete",
+    "ai.memory.export",
+    "ai.memory.import",
+    "ai.permissions",
+    "ai.plan.preview",
+    "ai.prompt.list",
+    "ai.prompt.get",
+    "ai.audit.list",
+    "math.preview",
+    "text.stats",
+    "project.snapshot",
+    "snapshot.list",
+    "snapshot.read",
+    "snapshot.restore",
+];
 
 /// Pre-rename (TexCraft-era) projects kept this state under `.texcraft/`.
 /// Adopt it once, if the new dir doesn't exist yet.
@@ -182,6 +242,9 @@ pub struct Session {
     /// Stamp captured by `open`/`save`; `None` for untitled buffers.
     disk_stamp: Option<FileStamp>,
     user_tools: Vec<UserTool>,
+    /// Session-scoped AI memory; cleared with the session and never
+    /// persisted unless explicitly promoted into project/task/user scope.
+    ai_session_memory: BTreeMap<String, Value>,
 }
 
 impl Session {
@@ -192,7 +255,7 @@ impl Session {
 
     /// Session prefilled with `src`, not dirty (e.g. an editor template).
     pub fn with_source(src: String) -> Self {
-        Self { path: None, src, dirty: false, disk_stamp: None, user_tools: Vec::new() }
+        Self { path: None, src, dirty: false, disk_stamp: None, user_tools: Vec::new(), ai_session_memory: BTreeMap::new() }
     }
 
     /// Path of the open file, if any.
@@ -219,6 +282,48 @@ impl Session {
     /// The session's configured user tools.
     pub fn user_tools(&self) -> &[UserTool] {
         &self.user_tools
+    }
+
+    /// Session-scoped AI memory records (`ai.memory` scope `session`).
+    pub(crate) fn ai_session_memory(&self) -> &BTreeMap<String, Value> {
+        &self.ai_session_memory
+    }
+
+    /// Mutable session-scoped AI memory records.
+    pub(crate) fn ai_session_memory_mut(&mut self) -> &mut BTreeMap<String, Value> {
+        &mut self.ai_session_memory
+    }
+
+    /// Durable AI state root: `<document-dir>/.warraqcraft/ai` for an open
+    /// file, otherwise the user-level WarraqCraft data directory.
+    pub(crate) fn ai_root(&self) -> PathBuf {
+        self.path.as_deref().and_then(Path::parent).map(|dir| dir.join(BUILD_DIR).join("ai")).unwrap_or_else(Self::ai_user_root)
+    }
+
+    /// User-level AI state root for untitled sessions and `user` memory.
+    /// `WARRAQCRAFT_CONFIG_DIR` wins for tests/portable installs; otherwise
+    /// the platform config convention is used without adding a dependency.
+    pub(crate) fn ai_user_root() -> PathBuf {
+        if let Some(dir) = std::env::var_os("WARRAQCRAFT_CONFIG_DIR").filter(|d| !d.is_empty()).map(PathBuf::from) {
+            return dir.join("ai");
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(dir) = std::env::var_os("APPDATA").filter(|d| !d.is_empty()).map(PathBuf::from) {
+            return dir.join("warraqcraft").join("ai");
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()).map(PathBuf::from) {
+            return dir.join("warraqcraft").join("ai");
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if let Some(dir) = std::env::var_os("HOME").filter(|d| !d.is_empty()).map(PathBuf::from) {
+            return dir.join(".config").join("warraqcraft").join("ai");
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(dir) = std::env::var_os("HOME").filter(|d| !d.is_empty()).map(PathBuf::from) {
+            return dir.join("Library").join("Application Support").join("warraqcraft").join("ai");
+        }
+        std::env::temp_dir().join("warraqcraft").join("ai")
     }
 
     /// Replace the buffer contents.
@@ -300,7 +405,15 @@ impl Session {
     }
 
     /// Dispatch a command by id. Params are JSON; results are JSON.
+    /// Mutating/provider commands also append a redacted record to the
+    /// session's AI audit trail without changing command semantics.
     pub fn execute(&mut self, cmd: &str, params: &Value) -> Result<Value, EngineError> {
+        let result = self.execute_inner(cmd, params);
+        ai_harness::audit_execute(self, cmd, params, &result);
+        result
+    }
+
+    fn execute_inner(&mut self, cmd: &str, params: &Value) -> Result<Value, EngineError> {
         match cmd {
             "document.new" => {
                 // Optional starter text; the buffer is dirty and has no path
@@ -316,6 +429,7 @@ impl Session {
                 self.dirty = true;
                 self.disk_stamp = None;
                 self.user_tools.clear();
+                self.ai_session_memory.clear();
                 Ok(json!({"ok": true, "path": Value::Null}))
             }
             "document.open" => {
@@ -324,6 +438,7 @@ impl Session {
                     return Err(EngineError::DirtyBuffer);
                 }
                 self.open(Path::new(path))?;
+                self.ai_session_memory.clear();
                 Ok(json!({"ok": true, "path": self.path_string()}))
             }
             "document.save" => {
@@ -425,6 +540,22 @@ impl Session {
             "ai.providers" => Ok(ai::providers()),
             "ai.probe" => ai::probe(params),
             "ai.ask" => ai::ask(params),
+            "ai.task.create" => ai_harness::task_create(self, params),
+            "ai.task.list" => ai_harness::task_list(self, params),
+            "ai.task.get" => ai_harness::task_get(self, params),
+            "ai.task.update" => ai_harness::task_update(self, params),
+            "ai.task.cancel" => ai_harness::task_cancel(self, params),
+            "ai.task.approve" => ai_harness::task_approve(self, params),
+            "ai.memory.list" => ai_harness::memory_list(self, params),
+            "ai.memory.set" => ai_harness::memory_set(self, params),
+            "ai.memory.delete" => ai_harness::memory_delete(self, params),
+            "ai.memory.export" => ai_harness::memory_export(self, params),
+            "ai.memory.import" => ai_harness::memory_import(self, params),
+            "ai.permissions" => ai_harness::permission_list(self, params),
+            "ai.plan.preview" => ai_harness::plan_preview(self, params),
+            "ai.prompt.list" => ai_harness::prompt_list(self, params),
+            "ai.prompt.get" => ai_harness::prompt_get(self, params),
+            "ai.audit.list" => ai_harness::audit_list(self, params),
             "project.snapshot" => history::snapshot(self, params),
             "snapshot.list" => history::list(self),
             "snapshot.read" => history::read(self, params),

@@ -44,16 +44,21 @@ const INTERNAL_ERROR: i64 = -32603;
 const SOURCE_URI: &str = "warraqcraft://doc/source";
 const STRUCTURE_URI: &str = "warraqcraft://doc/structure";
 const STATS_URI: &str = "warraqcraft://doc/stats";
+const AI_TASKS_URI: &str = "warraqcraft://ai/tasks";
+const AI_PERMISSIONS_URI: &str = "warraqcraft://ai/permissions";
+const AI_PROMPTS_URI: &str = "warraqcraft://ai/prompts";
+const AI_AUDIT_URI: &str = "warraqcraft://ai/audit";
 
 const INSTRUCTIONS: &str =
     "WarraqCraft edits LaTeX documents. Start an untitled buffer with document_new, open a .tex file with document_open or set the buffer directly \
 with source_set, then run the tools: source_get, structure_get and magic_get inspect the buffer, document_compile typesets \
 it with tectonic or a system TeX engine, math_preview renders a math fragment, text_stats reports document statistics, \
 template_* create documents from the shipped gallery, user_tool_* run configured external tools, \
-project_structure merges the outline across the input/include graph, repo_* inspect and run guarded fixed-argv Git collaboration commands, ai_probe/ai_ask call a configured OpenAI-compatible provider without storing its token, and \
+project_structure merges the outline across the input/include graph, repo_* inspect and run guarded fixed-argv Git collaboration commands, ai_probe/ai_ask call a configured OpenAI-compatible provider without storing its token, ai_task_*/ai_memory_*/ai_permissions/ai_plan_preview/ai_prompt_*/ai_audit_list expose the durable AI harness, and \
 project_snapshot/snapshot_* keep local file history. The open document is also readable as resources \
-warraqcraft://doc/source (text/plain), warraqcraft://doc/structure and warraqcraft://doc/stats (application/json) — read-only \
-snapshots of the live buffer.";
+warraqcraft://doc/source (text/plain), warraqcraft://doc/structure and warraqcraft://doc/stats (application/json), and AI state is readable as \
+warraqcraft://ai/tasks, warraqcraft://ai/permissions, warraqcraft://ai/prompts and warraqcraft://ai/audit — read-only \
+snapshots of the live buffer and harness.";
 
 /// MCP tool name → engine command id. The two tables stay in sync — a test
 /// pins the count and the name set.
@@ -89,6 +94,22 @@ const TOOL_COMMANDS: &[(&str, &str)] = &[
     ("ai_providers", "ai.providers"),
     ("ai_probe", "ai.probe"),
     ("ai_ask", "ai.ask"),
+    ("ai_task_create", "ai.task.create"),
+    ("ai_task_list", "ai.task.list"),
+    ("ai_task_get", "ai.task.get"),
+    ("ai_task_update", "ai.task.update"),
+    ("ai_task_cancel", "ai.task.cancel"),
+    ("ai_task_approve", "ai.task.approve"),
+    ("ai_memory_list", "ai.memory.list"),
+    ("ai_memory_set", "ai.memory.set"),
+    ("ai_memory_delete", "ai.memory.delete"),
+    ("ai_memory_export", "ai.memory.export"),
+    ("ai_memory_import", "ai.memory.import"),
+    ("ai_permissions", "ai.permissions"),
+    ("ai_plan_preview", "ai.plan.preview"),
+    ("ai_prompt_list", "ai.prompt.list"),
+    ("ai_prompt_get", "ai.prompt.get"),
+    ("ai_audit_list", "ai.audit.list"),
     ("math_preview", "math.preview"),
     ("text_stats", "text.stats"),
     ("project_snapshot", "project.snapshot"),
@@ -236,17 +257,25 @@ impl McpServer {
         }
     }
 
-    /// `resources/list`: the three document resources while the session
-    /// holds a document (a path or any buffer text), an empty list otherwise.
+    /// `resources/list`: document resources while the session holds a
+    /// document, plus the durable AI harness resources that are always
+    /// inspectable read-only.
     fn resource_list(&self) -> Vec<Value> {
-        if self.session.path().is_none() && self.session.source().is_empty() {
-            return Vec::new();
+        let mut resources = Vec::new();
+        if self.session.path().is_some() || !self.session.source().is_empty() {
+            resources.extend([
+                json!({ "uri": SOURCE_URI, "name": "Document source", "mimeType": "text/plain" }),
+                json!({ "uri": STRUCTURE_URI, "name": "Document structure", "mimeType": "application/json" }),
+                json!({ "uri": STATS_URI, "name": "Document statistics", "mimeType": "application/json" }),
+            ]);
         }
-        vec![
-            json!({ "uri": SOURCE_URI, "name": "Document source", "mimeType": "text/plain" }),
-            json!({ "uri": STRUCTURE_URI, "name": "Document structure", "mimeType": "application/json" }),
-            json!({ "uri": STATS_URI, "name": "Document statistics", "mimeType": "application/json" }),
-        ]
+        resources.extend([
+            json!({ "uri": AI_TASKS_URI, "name": "AI tasks", "mimeType": "application/json" }),
+            json!({ "uri": AI_PERMISSIONS_URI, "name": "AI command permissions", "mimeType": "application/json" }),
+            json!({ "uri": AI_PROMPTS_URI, "name": "AI prompts and guardrails", "mimeType": "application/json" }),
+            json!({ "uri": AI_AUDIT_URI, "name": "AI audit trail", "mimeType": "application/json" }),
+        ]);
+        resources
     }
 
     /// `resources/read`: the live buffer, its structure, or its statistics.
@@ -256,6 +285,10 @@ impl McpServer {
             SOURCE_URI => ("source.get", "text/plain", false),
             STRUCTURE_URI => ("structure.get", "application/json", true),
             STATS_URI => ("text.stats", "application/json", true),
+            AI_TASKS_URI => ("ai.task.list", "application/json", true),
+            AI_PERMISSIONS_URI => ("ai.permissions", "application/json", true),
+            AI_PROMPTS_URI => ("ai.prompt.list", "application/json", true),
+            AI_AUDIT_URI => ("ai.audit.list", "application/json", true),
             _ => return Err((INVALID_PARAMS, format!("unknown resource uri '{uri}'"))),
         };
         let result = self.session.execute(command, &json!({})).map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
@@ -286,7 +319,7 @@ fn error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-/// The same three URIs as `resources/templates/list` entries.
+/// The same URIs as `resources/templates/list` entries.
 fn resource_templates() -> Value {
     json!([
         { "uriTemplate": SOURCE_URI, "name": "Document source", "mimeType": "text/plain",
@@ -295,6 +328,14 @@ fn resource_templates() -> Value {
           "description": "The parsed structure of the open document (as structure_get)." },
         { "uriTemplate": STATS_URI, "name": "Document statistics", "mimeType": "application/json",
           "description": "Word/character counts and structural tallies of the open document (as text_stats)." },
+        { "uriTemplate": AI_TASKS_URI, "name": "AI tasks", "mimeType": "application/json",
+          "description": "Durable AI task summaries (as ai_task_list)." },
+        { "uriTemplate": AI_PERMISSIONS_URI, "name": "AI command permissions", "mimeType": "application/json",
+          "description": "Inspectable command permission matrix (as ai_permissions)." },
+        { "uriTemplate": AI_PROMPTS_URI, "name": "AI prompts and guardrails", "mimeType": "application/json",
+          "description": "Versioned AI prompt/guardrail registry entries (as ai_prompt_list)." },
+        { "uriTemplate": AI_AUDIT_URI, "name": "AI audit trail", "mimeType": "application/json",
+          "description": "Redacted AI/provider/mutation audit events (as ai_audit_list)." },
     ])
 }
 
@@ -595,6 +636,173 @@ fn tool_list() -> Vec<Value> {
             false,
         ),
         tool(
+            "ai_task_create",
+            "Create a durable AI task under .warraqcraft/ai/ (or the user AI store for an untitled session).",
+            json!({
+                "title": s("Short task title; required when prompt is empty."),
+                "prompt": s("Task instruction or request, capped at 64 KiB."),
+                "context": { "type": ["string", "object", "array"], "description": "Optional bounded task context." },
+                "owner": s("Task owner label (default local)."),
+                "state": { "type": "string", "enum": ["draft", "queued", "running", "waiting_approval", "blocked", "completed", "failed", "cancelled"] },
+            }),
+            &[],
+            false,
+            false,
+        ),
+        tool(
+            "ai_task_list",
+            "List durable AI task summaries, optionally filtered by state.",
+            json!({
+                "state": { "type": "string", "enum": ["draft", "queued", "running", "waiting_approval", "blocked", "completed", "failed", "cancelled"] },
+                "limit": { "type": "integer", "description": "Maximum tasks, clamped 1-500 (default 100)." },
+            }),
+            &[],
+            true,
+            false,
+        ),
+        tool("ai_task_get", "Read one complete AI task record.", json!({ "task_id": s("Task id from ai_task_list.") }), &["task_id"], true, false),
+        tool(
+            "ai_task_update",
+            "Record bounded lifecycle, checkpoint, result, error, or changed-path fields on a live task.",
+            json!({
+                "task_id": s("Task id from ai_task_list."),
+                "state": { "type": "string", "enum": ["draft", "queued", "running", "waiting_approval", "blocked", "completed", "failed", "cancelled"] },
+                "checkpoint": s("Optional checkpoint label."),
+                "detail": s("Optional bounded checkpoint detail."),
+                "result": { "type": ["string", "number", "integer", "boolean", "object", "array", "null"], "description": "Bounded task result JSON." },
+                "error": s("Optional bounded error message."),
+                "changed_paths": { "type": "array", "description": "Paths changed by the task (maximum 256)." },
+            }),
+            &["task_id"],
+            false,
+            false,
+        ),
+        tool(
+            "ai_task_cancel",
+            "Move a live AI task to cancelled; terminal tasks return unchanged.",
+            json!({
+                "task_id": s("Task id from ai_task_list."),
+                "reason": s("Optional cancellation reason."),
+            }),
+            &["task_id"],
+            false,
+            false,
+        ),
+        tool(
+            "ai_task_approve",
+            "Record approval or rejection for a task's previewed plan. Approval marks the task queued; rejection cancels it.",
+            json!({
+                "task_id": s("Task id from ai_task_list."),
+                "approve": { "type": "boolean", "description": "true approves (default), false rejects." },
+                "note": s("Optional approval note."),
+            }),
+            &["task_id"],
+            false,
+            false,
+        ),
+        tool(
+            "ai_memory_list",
+            "List inspectable memory entries for scope session, project, task, or user.",
+            json!({
+                "scope": { "type": "string", "enum": ["session", "project", "task", "user"], "description": "Memory scope (default project)." },
+                "task_id": s("Required when scope is task."),
+            }),
+            &[],
+            true,
+            false,
+        ),
+        tool(
+            "ai_memory_set",
+            "Set one memory record with source, timestamp, and optional pinned flag.",
+            json!({
+                "scope": { "type": "string", "enum": ["session", "project", "task", "user"], "description": "Memory scope (default project)." },
+                "task_id": s("Required when scope is task."),
+                "key": s("Memory key."),
+                "value": { "type": ["string", "number", "integer", "boolean", "object", "array", "null"], "description": "JSON value to store." },
+                "source": s("Source label (default manual)."),
+                "pinned": { "type": "boolean", "description": "Pin the memory; omitted preserves the current flag." },
+            }),
+            &["key", "value"],
+            false,
+            false,
+        ),
+        tool(
+            "ai_memory_delete",
+            "Delete one memory record from the selected scope.",
+            json!({
+                "scope": { "type": "string", "enum": ["session", "project", "task", "user"], "description": "Memory scope (default project)." },
+                "task_id": s("Required when scope is task."),
+                "key": s("Memory key."),
+            }),
+            &["key"],
+            false,
+            true,
+        ),
+        tool(
+            "ai_memory_export",
+            "Export a documented JSON memory scope for backup or transfer.",
+            json!({
+                "scope": { "type": "string", "enum": ["session", "project", "task", "user"], "description": "Memory scope (default project)." },
+                "task_id": s("Required when scope is task."),
+            }),
+            &[],
+            true,
+            false,
+        ),
+        tool(
+            "ai_memory_import",
+            "Import entries produced by ai_memory_export. replace=true clears the scope first.",
+            json!({
+                "scope": { "type": "string", "enum": ["session", "project", "task", "user"], "description": "Memory scope (default project)." },
+                "task_id": s("Required when scope is task."),
+                "data": { "type": ["object", "array"], "description": "Exported memory document or entries array." },
+                "replace": { "type": "boolean", "description": "Replace the scope instead of merging (default false)." },
+            }),
+            &["data"],
+            false,
+            true,
+        ),
+        tool(
+            "ai_permissions",
+            "Read the inspectable command permission matrix used by plan preview and audit records.",
+            json!({}),
+            &[],
+            true,
+            false,
+        ),
+        tool(
+            "ai_plan_preview",
+            "Classify a proposed command plan and return required approvals without executing any command.",
+            json!({
+                "task_id": s("Optional task to persist the plan on."),
+                "commands": { "type": "array", "description": "Commands as strings or {command, params} objects (1-64)." },
+            }),
+            &["commands"],
+            false,
+            false,
+        ),
+        tool("ai_prompt_list", "List versioned built-in and project prompt/guardrail registry entries.", json!({}), &[], true, false),
+        tool(
+            "ai_prompt_get",
+            "Read one prompt/guardrail registry entry by id.",
+            json!({ "id": s("Prompt id from ai_prompt_list.") }),
+            &["id"],
+            true,
+            false,
+        ),
+        tool(
+            "ai_audit_list",
+            "Read the bounded, redacted AI audit trail for provider calls, command mutations, approvals, and task transitions.",
+            json!({
+                "task_id": s("Optional task id filter."),
+                "event": s("Optional event name filter."),
+                "limit": { "type": "integer", "description": "Maximum events, clamped 1-1000 (default 100)." },
+            }),
+            &[],
+            true,
+            false,
+        ),
+        tool(
             "math_preview",
             "Compile a LaTeX math fragment to a preview PDF under .warraqcraft/preview/.",
             json!({ "latex": s("The LaTeX math fragment to render.") }),
@@ -637,6 +845,7 @@ fn tool_list() -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use warraqcraft_engine::COMMANDS;
 
     /// One JSON-RPC line in, the parsed reply out (or `None`).
     fn rpc(server: &mut McpServer, msg: &Value) -> Option<Value> {
@@ -692,9 +901,11 @@ mod tests {
         let mut s = McpServer::new();
         let r = rpc(&mut s, &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})).unwrap();
         let tools = r["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 37);
+        assert_eq!(TOOL_COMMANDS.len(), COMMANDS.len());
+        assert_eq!(tools.len(), COMMANDS.len());
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        for (name, _) in TOOL_COMMANDS {
+        for (name, command) in TOOL_COMMANDS {
+            assert!(COMMANDS.contains(command), "engine commands missing {command}");
             assert!(names.contains(name), "tools/list missing {name}");
         }
         for t in tools {
@@ -773,18 +984,18 @@ mod tests {
     #[test]
     fn resources_round_trip() {
         let mut s = McpServer::new();
-        // No document → empty list.
+        // No document → the read-only AI resources are still present.
         let r = rpc(&mut s, &json!({"jsonrpc": "2.0", "id": 1, "method": "resources/list"})).unwrap();
-        assert_eq!(r["result"]["resources"], json!([]));
-        // Templates always list the three URIs.
+        assert_eq!(r["result"]["resources"].as_array().unwrap().len(), 4);
+        // Templates list all document and AI URIs.
         let r = rpc(&mut s, &json!({"jsonrpc": "2.0", "id": 2, "method": "resources/templates/list"})).unwrap();
         let templates = r["result"]["resourceTemplates"].as_array().unwrap();
-        assert_eq!(templates.len(), 3);
-        // Set a buffer → the three live resources appear.
+        assert_eq!(templates.len(), 7);
+        // Set a buffer → the three live document resources join them.
         call(&mut s, 3, "source_set", json!({"text": "\\section{A}\nHello world."}));
         let r = rpc(&mut s, &json!({"jsonrpc": "2.0", "id": 4, "method": "resources/list"})).unwrap();
         let resources = r["result"]["resources"].as_array().unwrap();
-        assert_eq!(resources.len(), 3);
+        assert_eq!(resources.len(), 7);
         assert_eq!(resources[0]["uri"], SOURCE_URI);
         assert_eq!(resources[0]["mimeType"], "text/plain");
         // Read each one.
@@ -804,6 +1015,12 @@ mod tests {
         let r = read(&mut s, 7, STATS_URI);
         let v: Value = serde_json::from_str(r["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
         assert!(v["words"].as_u64().is_some());
+        let r = read(&mut s, 11, AI_TASKS_URI);
+        let v: Value = serde_json::from_str(r["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(v["tasks"].is_array());
+        let r = read(&mut s, 12, AI_PERMISSIONS_URI);
+        let v: Value = serde_json::from_str(r["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(v["commands"].as_array().unwrap().len(), COMMANDS.len());
         // Bad uri → -32602.
         let r = read(&mut s, 8, "warraqcraft://doc/nope");
         assert_eq!(r["error"]["code"], -32602);

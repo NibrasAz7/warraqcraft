@@ -1,30 +1,28 @@
-# WarraqCraft AI harness plan
+# WarraqCraft AI harness
 
-This document is the standalone plan for the AI harness. It is separate
-from the provider assist implemented in the desktop UI: the harness is
-the controlled system that gives an agent project context, memory, tasks
-and safe access to engine commands.
+This document describes the native AI harness. It is separate from the
+provider assist panel: the provider layer talks to an endpoint, while the
+harness owns durable tasks, inspectable memory, versioned prompts,
+permissions, approvals and the redacted audit trail.
 
-## Implemented provider path
+## Implemented M7.1 core
 
-The current phase-2 provider surface is intentionally smaller than the
-full harness:
-
-- **Desktop UI:** provider preset picker (`Ollama`, `OpenAI`,
-  `OpenRouter`, custom), endpoint/model fields, session-only token,
-  advertised-model picker, probe and ask actions.
-- **Automated Ollama:** the local preset can detect `ollama`, start its
-  service, pull the selected model and probe `/v1/models`. Windows uses
-  `winget` and macOS uses Homebrew for the explicit install step; other
-  platforms report a manual-install status rather than running a remote
-  shell script.
-- **Secrets:** the bearer token is never persisted or included in result
-  JSON.
-- **Agent surface:** `ai.providers`, `ai.probe` and `ai.ask` are engine
-  commands, reachable through `warraqcraft-cli cmd`, the control channel
-  and MCP tools. Requests bound context to 24 KiB and prompts to 64 KiB.
-
-The full harness below remains the design target.
+- **Desktop UI:** the AI window has a provider section plus a harness
+  inspector for tasks, approvals, plan previews, the permission matrix,
+  scoped memory, prompt versions and audit events.
+- **Provider assist:** Ollama, OpenAI, OpenRouter and custom endpoints
+  remain provider features. Tokens are request-only and are never
+  persisted or included in result JSON.
+- **Durable state:** project tasks, project memory and audit events live
+  under `<document>/.warraqcraft/ai/`; untitled/user state uses the
+  platform WarraqCraft AI directory. Writes are atomic where files are
+  replaced.
+- **Agent surface:** all harness commands are engine commands, reachable
+  through `warraqcraft-cli cmd`, the live control channel and MCP tools.
+- **Safety:** plan preview never executes commands, unknown commands fail
+  closed, parameter values in audit logs are redacted to shapes/lengths,
+  and `.warraqcraft` internal state is excluded from repository status
+  and `stage: true` commits.
 
 ## Product goals
 
@@ -82,11 +80,18 @@ Implemented provider commands:
 - `ai.probe` — probe an OpenAI-compatible endpoint without document text
 - `ai.ask` — send one bounded context prompt; token is request-only
 
-Proposed harness commands:
+Implemented harness commands:
 
-- `ai.task.create`, `ai.task.list`, `ai.task.get`, `ai.task.cancel`
-- `ai.memory.list`, `ai.memory.set`, `ai.memory.delete`
-- `ai.plan.preview` — returns proposed commands without executing them
+- `ai.task.create`, `ai.task.list`, `ai.task.get`, `ai.task.update`,
+  `ai.task.cancel`, `ai.task.approve`
+- `ai.memory.list`, `ai.memory.set`, `ai.memory.delete`,
+  `ai.memory.export`, `ai.memory.import`
+- `ai.permissions` — return the inspectable command permission matrix
+- `ai.plan.preview` — classify proposed commands without executing them;
+  with `task_id`, store the preview on that task
+- `ai.prompt.list`, `ai.prompt.get` — versioned built-in/project prompt,
+  guardrail and tool-guidance registry
+- `ai.audit.list` — bounded redacted audit events
 
 ## System prompt contract
 
@@ -117,7 +122,11 @@ Commands fall into explicit tiers:
 | Destructive | delete file, discard recovery, branch reset | always explicit approval |
 
 MCP/control clients receive the same policy. A remote token authenticates
-the client; it does not bypass approvals.
+the client; it does not bypass approvals. `ai.permissions` exposes the
+baseline matrix and parameter-dependent escalations (`discard`,
+`overwrite`, `replace`, `task_id`). `ai.plan.preview` applies the same
+classifier to a proposed command list and returns the approval boundary
+without executing anything.
 
 ## Provider setup flows
 
@@ -156,7 +165,14 @@ the client; it does not bypass approvals.
 3. Ollama service/model setup and platform installer handoff — shipped
    for detection/pull; explicit install is Windows/macOS, manual status
    elsewhere.
-4. Durable task queue and memory stores under `.warraqcraft/ai/`.
-5. System prompt registry and command permission matrix.
-6. Approval UI with dry-run command previews.
-7. Agent-facing CLI/MCP task and memory tools.
+4. Durable task queue and memory stores under `.warraqcraft/ai/` —
+   shipped in M7.1.
+5. Versioned prompt/guardrail registry and inspectable command
+   permission matrix — shipped in M7.1.
+6. Approval UI and fail-closed dry-run command previews — shipped in
+   M7.1.
+7. Agent-facing CLI/control/MCP task, memory, permission and audit
+   tools — shipped in M7.1.
+8. Bounded compile-repair workflow — planned in M7.2.
+9. Harness component/skills registry and deterministic evaluation
+   fixtures — planned in M7.3.

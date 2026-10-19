@@ -15,7 +15,28 @@ widget) are tracked there — nothing in M0 depends on them.
 | M2 | `engine` command registry + Session; CLI `--cmd` surface | in progress — Session + execute() landed; `--cmd`/control next |
 | M3 | `ui-egui` studio: project tree, editor, PDF preview, SyncTeX nav | in progress — IDE shell, editor, PDF preview, SyncTeX click-through and project-wide outline/refs done |
 | M4 | History (snapshots/diff/restore), reference-manager integration (Zotero/CSL), arabdoc + template gallery | in progress — snapshots/history and multilingual source-only template gallery landed; reference-manager integration open |
-| M5 | Ship readiness: settings, print/export, untitled/autosave, platform packaging and docs | in progress |
+| M5 | Ship readiness: settings, print/export, untitled/autosave, platform packaging and docs | in progress — Windows/Linux runtime QA done; macOS runtime QA open |
+| M6 | Collaboration, agent integration and release hardening | in progress — Git UX, stale-file safety, agent docs and Windows/Linux QA landed; live presence remains deferred |
+| M7 | Native AI harness and product-ready gate | in progress — M7.1 harness core landed; compile-repair workflow second, component/evaluation and final platform gate next |
+
+## Product-ready path
+
+1. **M7.1 — native AI harness core — done.** Durable `.warraqcraft/ai/`
+   tasks, inspectable memory, versioned prompts/guardrails, the
+   `ai.permissions` command matrix, approval/dry-run flow, redacted audit
+   log, and GUI/CLI/control/MCP parity landed.
+2. **M7.2 — bounded compile-repair agent.** The first end-to-end agent
+   task gathers diagnostics and project context, previews a minimal
+   patch, asks approval, applies it, recompiles and records the outcome.
+3. **M7.3 — harness components and evaluation.** Add the
+   Harness²-inspired component tree (prompts, guardrails, memory, tool
+   guidance, skills, task evidence and audit runs) plus deterministic
+   LaTeX repair/evaluation fixtures. Use the external Harness² project as
+   a design reference only; do not add its Python/OpenCode/Codex runtime
+   or its sandbox-bypass model.
+4. **M7.4 — final ship gate.** Real macOS runtime QA, refreshed Windows
+   and Linux release tests, canonical community-template link, final
+   docs/release notes, package hashes and clean `ci`/`wasm` gates.
 
 ## Progress log
 
@@ -197,3 +218,26 @@ widget) are tracked there — nothing in M0 depends on them.
   * `docs/RELEASE-QA.md` records the artifact checklist, Windows result,
     Ubuntu 22.04 WSL2 result and the remaining real-device macOS
     validation steps.
+- M7.0 — external harness investigation:
+  * `henri-edh/google-harness2` was cloned and reviewed; the fork tracks
+    upstream `google-research/harness2` and is Apache-2.0 licensed.
+  * Its useful ideas are the editable component tree, evidence workspace,
+    per-domain experience library, candidate comparison, resumable runs
+    and budget accounting.
+  * It is a Python/OpenCode/Codex benchmark harness rather than a
+    desktop-agent runtime, so the product path is a Rust-native harness
+    that preserves WarraqCraft's command, permission, offline and WASM
+    boundaries.
+- M7.1 — native AI harness core:
+  * `engine::ai_harness` adds durable `.warraqcraft/ai/` tasks, scoped
+    session/project/task/user memory, versioned system/guardrail/tool
+    prompts, approval-aware task plans and bounded atomic state files.
+  * `ai.permissions` exposes the command policy matrix; `ai.plan.preview`
+    fails closed on unknown commands and never executes a proposed step;
+    `ai.audit.list` returns redacted command/task/provider records.
+  * The localized AI window now shows tasks, approvals, plans,
+    permissions, memory, prompt versions and audit events; the same 53
+    commands are listed by the CLI, available on the control channel and
+    exposed as 53 MCP tools plus read-only AI resources.
+  * Git status and `stage: true` exclude `.warraqcraft`/`.texcraft`
+    internal state so harness bookkeeping is not mistaken for source work.

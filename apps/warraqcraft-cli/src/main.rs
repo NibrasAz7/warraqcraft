@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 use texparse::{parse_bib, parse_structure};
-use warraqcraft_engine::Session;
+use warraqcraft_engine::{Session, COMMANDS};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -191,47 +191,6 @@ fn bib_file(_path: &str, src: &str) -> ExitCode {
     }
     ExitCode::SUCCESS
 }
-
-/// Engine command names — kept in sync with `Session::execute` by hand.
-const COMMANDS: &[&str] = &[
-    "document.new",
-    "document.open",
-    "document.save",
-    "document.disk_state",
-    "document.compile",
-    "source.set",
-    "source.get",
-    "structure.get",
-    "magic.get",
-    "user_tool.list",
-    "user_tool.set",
-    "user_tool.run",
-    "user_tool.clear",
-    "template.list",
-    "template.read",
-    "template.new",
-    "template.import",
-    "project.graph",
-    "project.structure",
-    "repo.status",
-    "repo.init",
-    "repo.remote",
-    "repo.pull",
-    "repo.push",
-    "repo.commit",
-    "repo.branches",
-    "repo.conflicts",
-    "repo.history",
-    "ai.providers",
-    "ai.probe",
-    "ai.ask",
-    "math.preview",
-    "text.stats",
-    "project.snapshot",
-    "snapshot.list",
-    "snapshot.read",
-    "snapshot.restore",
-];
 
 fn commands_cmd() -> ExitCode {
     for c in COMMANDS {

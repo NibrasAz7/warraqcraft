@@ -56,6 +56,7 @@ Useful command groups:
 | Templates | `template.list`, `template.read`, `template.new`, `template.import` |
 | Git | `repo.status`, `repo.init`, `repo.remote`, `repo.pull`, `repo.push`, `repo.commit`, `repo.branches`, `repo.conflicts`, `repo.history` |
 | AI provider | `ai.providers`, `ai.probe`, `ai.ask` |
+| AI harness | `ai.task.*`, `ai.memory.*`, `ai.permissions`, `ai.plan.preview`, `ai.prompt.*`, `ai.audit.list` |
 | External tools | `user_tool.list`, `user_tool.set`, `user_tool.run`, `user_tool.clear` |
 | Preview | `math.preview` |
 
@@ -75,6 +76,10 @@ Useful command groups:
 - Git credentials belong to Git and the user's credential helpers. Do not
   store tokens in project files, MCP config, prompts or preferences.
 - Remote URLs and Git output are redacted before returning to agents.
+- Use `ai.permissions` and `ai.plan.preview` before proposing command
+  sequences; the preview is fail-closed and does not execute commands.
+  `ai.audit.list` exposes the bounded redacted record of AI/provider and
+  mutating command activity.
 - `\write18`-style LaTeX shell escape is disabled.
 - MCP and TCP control are opt-in only; neither is started by the app by
   default.
@@ -173,6 +178,10 @@ available:
 - `warraqcraft://doc/source` — current LaTeX source (`text/plain`)
 - `warraqcraft://doc/structure` — parsed structure (`application/json`)
 - `warraqcraft://doc/stats` — document statistics (`application/json`)
+- `warraqcraft://ai/tasks` — durable task summaries (`application/json`)
+- `warraqcraft://ai/permissions` — command permission matrix (`application/json`)
+- `warraqcraft://ai/prompts` — prompt/guardrail registry (`application/json`)
+- `warraqcraft://ai/audit` — redacted audit trail (`application/json`)
 
 A persistent MCP edit loop is `document_open` → `source_get` →
 `source_set` → `document_save` → `document_compile`. `source_set` is a
@@ -287,7 +296,8 @@ Use this as a starting point when wiring an agent to WarraqCraft:
 ```text
 You are operating WarraqCraft through its registered engine commands.
 Use only commands returned by `warraqcraft-cli commands` or MCP
-`tools/list`. Prefer read-only inspection before changing state.
+`tools/list`. Prefer read-only inspection before changing state. Check
+`ai_permissions` and preview mutating sequences with `ai_plan_preview`.
 `source_set` replaces the entire buffer; make minimal edits and explain
 them. Never use `discard`, `overwrite`, `confirm`, Git mutations, user
 tools, AI provider calls, or external processes without explicit user
