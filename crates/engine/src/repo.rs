@@ -142,12 +142,24 @@ fn guard_clean(session: &Session) -> Result<(), EngineError> {
     Ok(())
 }
 
-fn remote_name(params: &Value) -> Result<String, EngineError> {
-    let name = params.get("remote").and_then(Value::as_str).unwrap_or("origin");
+fn remote_name_opt(params: &Value, key: &'static str) -> Result<Option<String>, EngineError> {
+    let Some(name) = params.get(key).and_then(Value::as_str) else { return Ok(None) };
     if name.is_empty() || name.len() > MAX_NAME || !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) {
-        return Err(EngineError::BadParam("remote"));
+        return Err(EngineError::BadParam(key));
     }
-    Ok(name.to_string())
+    Ok(Some(name.to_string()))
+}
+
+fn remote_name(params: &Value) -> Result<String, EngineError> {
+    Ok(remote_name_opt(params, "remote")?.unwrap_or_else(|| "origin".to_string()))
+}
+
+fn remote_url_param<'a>(params: &'a Value, key: &'static str) -> Result<&'a str, EngineError> {
+    let url = params.get(key).and_then(Value::as_str).ok_or(EngineError::BadParam(key))?;
+    if url.is_empty() || url.len() > MAX_URL {
+        return Err(EngineError::BadParam(key));
+    }
+    Ok(url)
 }
 
 fn branch_name(params: &Value, key: &'static str) -> Result<Option<String>, EngineError> {
@@ -178,6 +190,36 @@ fn redact_credentials(input: &str) -> String {
         out.push_str(word);
     }
     out
+}
+
+fn branch_list(root: &Path, timeout: Duration) -> Result<Vec<Value>, EngineError> {
+    let out = git_ok(root, &["branch", "--format=%(HEAD)%09%(refname:short)%09%(upstream:short)%09%(objectname:short)"], timeout)?;
+    let mut list = Vec::new();
+    for line in String::from_utf8_lossy(&out).lines().take(MAX_LIST) {
+        let mut parts = line.split('\t');
+        let current = parts.next().unwrap_or_default().trim() == "*";
+        let name = parts.next().unwrap_or_default().to_string();
+        let upstream = parts.next().unwrap_or_default().to_string();
+        let commit = parts.next().unwrap_or_default().to_string();
+        list.push(json!({"name": name, "current": current, "upstream": upstream, "commit": commit}));
+    }
+    Ok(list)
+}
+
+fn history_entries(root: &Path, timeout: Duration, limit: u64) -> Result<Vec<Value>, EngineError> {
+    let limit = limit.clamp(1, 100).to_string();
+    let out = git(root, &["log", "-n", &limit, "--date=short", "--format=%h%x09%ad%x09%an%x09%s"], timeout)?;
+    if out.status != Some(0) || out.timed_out {
+        return Ok(Vec::new());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .take(100)
+        .map(|line| {
+            let mut p = line.split('\t');
+            json!({"commit": p.next().unwrap_or_default(), "date": p.next().unwrap_or_default(), "author": p.next().unwrap_or_default(), "subject": p.next().unwrap_or_default()})
+        })
+        .collect())
 }
 
 /// `repo.status` — branch/upstream/ahead-behind/worktree state for the
@@ -246,6 +288,8 @@ pub fn status(session: &Session, params: &Value) -> Result<Value, EngineError> {
             changes.push(json!({"status": code, "path": path}));
         }
     }
+    let branches = branch_list(&root, t)?;
+    let history = history_entries(&root, t, 8)?;
     Ok(json!({
         "git": true,
         "in_repo": true,
@@ -265,6 +309,8 @@ pub fn status(session: &Session, params: &Value) -> Result<Value, EngineError> {
         "untracked": untracked,
         "conflicts": conflicts,
         "changes": changes,
+        "branches": branches,
+        "history": history,
         "dirty_buffer": session.dirty(),
         "external_changed": session.disk_changed()?,
     }))
@@ -278,30 +324,52 @@ pub fn init(session: &Session, params: &Value) -> Result<Value, EngineError> {
     let t = timeout(params, DEFAULT_TIMEOUT_S);
     git_ok(&dir, &["init"], t)?;
     let mut remote_url = Value::Null;
-    if let Some(url) = params.get("remote").and_then(Value::as_str) {
-        if url.is_empty() || url.len() > MAX_URL {
-            return Err(EngineError::BadParam("remote"));
-        }
-        let name = params.get("remote_name").and_then(Value::as_str).unwrap_or("origin");
-        if name.is_empty() || name.len() > MAX_NAME || !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) {
-            return Err(EngineError::BadParam("remote_name"));
-        }
-        git_ok(&dir, &["remote", "add", name, url], t)?;
+    if params.get("remote").and_then(Value::as_str).is_some() {
+        let url = remote_url_param(params, "remote")?;
+        let name = remote_name_opt(params, "remote_name")?.unwrap_or_else(|| "origin".to_string());
+        git_ok(&dir, &["remote", "add", &name, url], t)?;
         remote_url = Value::String(redact_credentials(url));
     }
     Ok(json!({"ok": true, "root": dir.display().to_string(), "remote_url": remote_url}))
 }
 
-/// `repo.pull` — fast-forward only. A dirty buffer or externally changed
-/// open file blocks the operation; other worktree conflicts are Git's
-/// normal actionable error.
+/// `repo.remote` — connect or update a remote on an existing repository.
+/// The URL is written to Git config only; WarraqCraft persists no remote
+/// credentials and redacts the response.
+pub fn remote(session: &Session, params: &Value) -> Result<Value, EngineError> {
+    let t = timeout(params, DEFAULT_TIMEOUT_S);
+    let (_, root) = require_repo(session, t)?;
+    let name = remote_name_opt(params, "name")?.unwrap_or_else(|| "origin".to_string());
+    let url = remote_url_param(params, "url")?;
+    let existing = git(&root, &["remote", "get-url", &name], t)?;
+    let updated = existing.status == Some(0) && !existing.timed_out;
+    if updated {
+        git_ok(&root, &["remote", "set-url", &name, url], t)?;
+    } else {
+        git_ok(&root, &["remote", "add", &name, url], t)?;
+    }
+    Ok(json!({"ok": true, "root": root.display().to_string(), "remote": name, "remote_url": redact_credentials(url), "updated": updated}))
+}
+
+fn pull_strategy(params: &Value) -> Result<&'static str, EngineError> {
+    match params.get("strategy").and_then(Value::as_str).unwrap_or("ff-only") {
+        "ff-only" => Ok("--ff-only"),
+        "rebase" => Ok("--rebase"),
+        _ => Err(EngineError::BadParam("strategy")),
+    }
+}
+
+/// `repo.pull` — explicit fast-forward or rebase pull. A dirty buffer or
+/// externally changed open file blocks the operation; other worktree
+/// conflicts are Git's normal actionable error.
 pub fn pull(session: &Session, params: &Value) -> Result<Value, EngineError> {
     guard_clean(session)?;
     let t = timeout(params, NETWORK_TIMEOUT_S);
     let (_, root) = require_repo(session, t)?;
-    let remote = branch_name(params, "remote")?;
+    let remote = remote_name_opt(params, "remote")?;
     let branch = branch_name(params, "branch")?;
-    let mut args = vec!["pull".to_string(), "--ff-only".to_string()];
+    let strategy = pull_strategy(params)?;
+    let mut args = vec!["pull".to_string(), strategy.to_string()];
     if let Some(r) = remote {
         args.push(r);
         if let Some(b) = branch {
@@ -309,7 +377,9 @@ pub fn pull(session: &Session, params: &Value) -> Result<Value, EngineError> {
         }
     }
     let out = git_ok(&root, &args.iter().map(String::as_str).collect::<Vec<_>>(), t)?;
-    Ok(json!({"ok": true, "root": root.display().to_string(), "output": redact_credentials(&text(&out))}))
+    Ok(
+        json!({"ok": true, "root": root.display().to_string(), "strategy": strategy.trim_start_matches('-'), "output": redact_credentials(&text(&out))}),
+    )
 }
 
 /// `repo.push` — explicit push. `set_upstream: true` maps to `git push
@@ -318,7 +388,7 @@ pub fn push(session: &Session, params: &Value) -> Result<Value, EngineError> {
     guard_clean(session)?;
     let t = timeout(params, NETWORK_TIMEOUT_S);
     let (_, root) = require_repo(session, t)?;
-    let remote = branch_name(params, "remote")?;
+    let remote = remote_name_opt(params, "remote")?;
     let branch = branch_name(params, "branch")?;
     let set_upstream = params.get("set_upstream").and_then(Value::as_bool).unwrap_or(false);
     let mut args = vec!["push".to_string()];
@@ -371,20 +441,13 @@ pub fn branches(session: &Session, params: &Value) -> Result<Value, EngineError>
             git_ok(&root, &["switch", &name], t)?;
         }
     }
-    let out = git_ok(&root, &["branch", "--format=%(HEAD)%09%(refname:short)%09%(upstream:short)%09%(objectname:short)"], t)?;
-    let mut current = String::new();
-    let mut list = Vec::new();
-    for line in String::from_utf8_lossy(&out).lines().take(MAX_LIST) {
-        let mut parts = line.split('\t');
-        let cur = parts.next().unwrap_or_default().trim() == "*";
-        let name = parts.next().unwrap_or_default().to_string();
-        let upstream = parts.next().unwrap_or_default().to_string();
-        let commit = parts.next().unwrap_or_default().to_string();
-        if cur {
-            current = name.clone();
-        }
-        list.push(json!({"name": name, "current": cur, "upstream": upstream, "commit": commit}));
-    }
+    let list = branch_list(&root, t)?;
+    let current = list
+        .iter()
+        .filter(|b| b.get("current").and_then(Value::as_bool).unwrap_or(false))
+        .find_map(|b| b.get("name").and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_string();
     Ok(json!({"ok": true, "root": root.display().to_string(), "current": current, "branches": list}))
 }
 
@@ -402,16 +465,8 @@ pub fn conflicts(session: &Session) -> Result<Value, EngineError> {
 pub fn history(session: &Session, params: &Value) -> Result<Value, EngineError> {
     let t = timeout(params, DEFAULT_TIMEOUT_S);
     let (_, root) = require_repo(session, t)?;
-    let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(20).clamp(1, 100).to_string();
-    let out = git_ok(&root, &["log", "-n", &limit, "--date=short", "--format=%h%x09%ad%x09%an%x09%s"], t)?;
-    let entries: Vec<Value> = String::from_utf8_lossy(&out)
-        .lines()
-        .take(100)
-        .map(|line| {
-            let mut p = line.split('\t');
-            json!({"commit": p.next().unwrap_or_default(), "date": p.next().unwrap_or_default(), "author": p.next().unwrap_or_default(), "subject": p.next().unwrap_or_default()})
-        })
-        .collect();
+    let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(20);
+    let entries = history_entries(&root, t, limit)?;
     Ok(json!({"root": root.display().to_string(), "entries": entries}))
 }
 
@@ -430,7 +485,17 @@ mod tests {
     fn bad_names_are_rejected_before_git() {
         assert!(remote_name(&json!({"remote": "origin"})).is_ok());
         assert!(remote_name(&json!({"remote": "bad name"})).is_err());
+        assert!(remote_name_opt(&json!({"name": "backup-2"}), "name").is_ok());
+        assert!(remote_url_param(&json!({"url": "https://example.com/r.git"}), "url").is_ok());
+        assert!(remote_url_param(&json!({"url": ""}), "url").is_err());
         assert!(branch_name(&json!({"switch": "-d"}), "switch").is_err());
         assert!(branch_name(&json!({"switch": "feature/one"}), "switch").is_ok());
+    }
+
+    #[test]
+    fn pull_strategy_is_explicit_and_bounded() {
+        assert_eq!(pull_strategy(&json!({})).unwrap(), "--ff-only");
+        assert_eq!(pull_strategy(&json!({"strategy": "rebase"})).unwrap(), "--rebase");
+        assert!(pull_strategy(&json!({"strategy": "merge"})).is_err());
     }
 }

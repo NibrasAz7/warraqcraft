@@ -365,17 +365,46 @@ type ToolJob = Result<serde_json::Value, String>;
 /// `repo.status` rather than duplicating command parsing in the UI.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Default, Clone)]
+struct RepoBranch {
+    name: String,
+    current: bool,
+    upstream: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default, Clone)]
+struct RepoChange {
+    status: String,
+    path: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default, Clone)]
+struct RepoCommit {
+    commit: String,
+    date: String,
+    author: String,
+    subject: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default, Clone)]
 struct RepoStatus {
     git: bool,
     in_repo: bool,
     branch: String,
     upstream: String,
+    remote: String,
     remote_url: String,
     ahead: u64,
     behind: u64,
     changed: u64,
     conflicts: u64,
     clean: bool,
+    conflict_paths: Vec<String>,
+    changes: Vec<RepoChange>,
+    branches: Vec<RepoBranch>,
+    history: Vec<RepoCommit>,
 }
 
 /// `(command, result)` — status refreshes and mutating repo actions share
@@ -543,6 +572,16 @@ pub struct WarraqApp {
     repo_commit_msg: String,
     #[cfg(not(target_arch = "wasm32"))]
     repo_stage_all: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    repo_remote_name: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    repo_remote_url: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    repo_branch_new: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    repo_pull_rebase: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    repo_push_upstream: bool,
     /// Open file changed/deleted on disk after its loaded stamp. The
     /// modal opens on the first transition; the chip remains until
     /// reload/overwrite clears the state.
@@ -663,6 +702,16 @@ impl WarraqApp {
             repo_commit_msg: String::new(),
             #[cfg(not(target_arch = "wasm32"))]
             repo_stage_all: true,
+            #[cfg(not(target_arch = "wasm32"))]
+            repo_remote_name: "origin".to_string(),
+            #[cfg(not(target_arch = "wasm32"))]
+            repo_remote_url: String::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            repo_branch_new: String::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            repo_pull_rebase: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            repo_push_upstream: false,
             external_changed: false,
             external_modal: false,
             external_checked_at: f64::NEG_INFINITY,
@@ -867,6 +916,9 @@ impl WarraqApp {
                 if command == "repo.status" {
                     self.repo_status = Some(repo_status_from_json(&v));
                 } else {
+                    if command == "repo.remote" {
+                        self.repo_remote_url.clear();
+                    }
                     self.status = lang::fmt(self.s().status_repo_done, &[("cmd", &command)]);
                     self.repo_checked_at = f64::NEG_INFINITY;
                     self.external_checked_at = f64::NEG_INFINITY;
@@ -3786,8 +3838,8 @@ impl WarraqApp {
         let mut commit_msg = String::new();
         egui::Window::new(lang::view(self.s().repo_title))
             .collapsible(false)
-            .resizable(false)
-            .default_width(410.0)
+            .resizable(true)
+            .default_width(560.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .open(&mut open)
             .show(ctx, |ui| {
@@ -3802,60 +3854,151 @@ impl WarraqApp {
                 }
                 if !status.in_repo {
                     ui.label(egui::RichText::new(lang::view(s.repo_no_repo)).size(11.0).color(theme::pal().muted));
+                    ui.add(egui::TextEdit::singleline(&mut self.repo_remote_name).hint_text(lang::view(s.repo_remote_name)).desired_width(120.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.repo_remote_url).hint_text(lang::view(s.repo_remote_url)).desired_width(390.0));
                     if ui.button(lang::view(s.repo_init)).clicked() {
-                        action = Some(("repo.init", serde_json::json!({})));
+                        let mut params = serde_json::json!({});
+                        if !self.repo_remote_url.trim().is_empty() {
+                            let name = if self.repo_remote_name.trim().is_empty() { "origin" } else { self.repo_remote_name.trim() };
+                            params["remote"] = self.repo_remote_url.trim().into();
+                            params["remote_name"] = name.into();
+                        }
+                        action = Some(("repo.init", params));
                     }
                     return;
                 }
-                ui.label(egui::RichText::new(lang::fmt(s.repo_branch, &[("name", &status.branch)])).size(11.0));
-                if !status.upstream.is_empty() {
-                    ui.label(egui::RichText::new(lang::fmt(s.repo_upstream, &[("name", &status.upstream)])).size(11.0));
-                }
-                if !status.remote_url.is_empty() {
-                    ui.label(egui::RichText::new(lang::fmt(s.repo_remote, &[("url", &status.remote_url)])).size(10.5).monospace());
-                }
-                ui.label(egui::RichText::new(lang::fmt(s.repo_changes, &[("n", &status.changed.to_string())])).size(11.0));
-                if status.conflicts > 0 {
-                    ui.label(
-                        egui::RichText::new(lang::fmt(s.repo_conflicts, &[("n", &status.conflicts.to_string())]))
-                            .size(11.0)
-                            .color(theme::pal().error),
-                    );
-                }
-                if status.ahead > 0 {
-                    ui.label(egui::RichText::new(lang::fmt(s.repo_ahead, &[("n", &status.ahead.to_string())])).size(11.0));
-                }
-                if status.behind > 0 {
-                    ui.label(egui::RichText::new(lang::fmt(s.repo_behind, &[("n", &status.behind.to_string())])).size(11.0).color(theme::pal().warn));
-                }
-                if status.clean {
-                    ui.label(egui::RichText::new(lang::view(s.repo_clean)).size(10.5).color(theme::pal().accent_dim));
-                }
-                ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button(lang::view(s.repo_refresh)).clicked() {
-                        action = Some(("repo.status", serde_json::json!({})));
+
+                egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+                    ui.label(egui::RichText::new(lang::fmt(s.repo_branch, &[("name", &status.branch)])).size(11.0));
+                    if !status.upstream.is_empty() {
+                        ui.label(egui::RichText::new(lang::fmt(s.repo_upstream, &[("name", &status.upstream)])).size(11.0));
                     }
-                    if ui.add_enabled(status.conflicts == 0, egui::Button::new(lang::view(s.repo_pull))).clicked() {
-                        action = Some(("repo.pull", serde_json::json!({})));
+                    if !status.remote_url.is_empty() {
+                        ui.label(egui::RichText::new(lang::fmt(s.repo_remote, &[("url", &status.remote_url)])).size(10.5).monospace());
                     }
-                    if ui.add_enabled(status.conflicts == 0, egui::Button::new(lang::view(s.repo_push))).clicked() {
-                        action = Some(("repo.push", serde_json::json!({})));
+                    ui.label(egui::RichText::new(lang::fmt(s.repo_changes, &[("n", &status.changed.to_string())])).size(11.0));
+                    if status.conflicts > 0 {
+                        ui.label(
+                            egui::RichText::new(lang::fmt(s.repo_conflicts, &[("n", &status.conflicts.to_string())]))
+                                .size(11.0)
+                                .color(theme::pal().error),
+                        );
+                    }
+                    if status.ahead > 0 {
+                        ui.label(egui::RichText::new(lang::fmt(s.repo_ahead, &[("n", &status.ahead.to_string())])).size(11.0));
+                    }
+                    if status.behind > 0 {
+                        ui.label(
+                            egui::RichText::new(lang::fmt(s.repo_behind, &[("n", &status.behind.to_string())])).size(11.0).color(theme::pal().warn),
+                        );
+                    }
+                    if status.clean {
+                        ui.label(egui::RichText::new(lang::view(s.repo_clean)).size(10.5).color(theme::pal().accent_dim));
+                    }
+
+                    if status.remote_url.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(lang::view(s.repo_no_remote)).size(10.5).color(theme::pal().muted));
+                    }
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut self.repo_remote_name).hint_text(lang::view(s.repo_remote_name)).desired_width(105.0));
+                        ui.add(egui::TextEdit::singleline(&mut self.repo_remote_url).hint_text(lang::view(s.repo_remote_url)).desired_width(300.0));
+                        if ui.add_enabled(!self.repo_remote_url.trim().is_empty(), egui::Button::new(lang::view(s.repo_connect))).clicked() {
+                            let name = if self.repo_remote_name.trim().is_empty() { "origin" } else { self.repo_remote_name.trim() };
+                            action = Some(("repo.remote", serde_json::json!({"name": name, "url": self.repo_remote_url.trim()})));
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button(lang::view(s.repo_refresh)).clicked() {
+                            action = Some(("repo.status", serde_json::json!({})));
+                        }
+                        if ui.add_enabled(status.conflicts == 0, egui::Button::new(lang::view(s.repo_pull))).clicked() {
+                            action = Some(("repo.pull", serde_json::json!({"strategy": if self.repo_pull_rebase { "rebase" } else { "ff-only" }})));
+                        }
+                        if ui.add_enabled(status.conflicts == 0, egui::Button::new(lang::view(s.repo_push))).clicked() {
+                            let params = if self.repo_push_upstream && !status.branch.is_empty() {
+                                serde_json::json!({"remote": status.remote, "branch": status.branch, "set_upstream": true})
+                            } else {
+                                serde_json::json!({})
+                            };
+                            action = Some(("repo.push", params));
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        egui::ComboBox::from_id_salt("repo_pull_strategy")
+                            .selected_text(lang::view(if self.repo_pull_rebase { s.repo_pull_rebase } else { s.repo_pull_ff }))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.repo_pull_rebase, false, lang::view(s.repo_pull_ff));
+                                ui.selectable_value(&mut self.repo_pull_rebase, true, lang::view(s.repo_pull_rebase));
+                            });
+                        ui.add_enabled(
+                            !status.remote_url.is_empty(),
+                            egui::Checkbox::new(&mut self.repo_push_upstream, lang::view(s.repo_set_upstream)),
+                        );
+                    });
+
+                    egui::CollapsingHeader::new(lang::view(s.repo_branches_title)).default_open(true).show(ui, |ui| {
+                        egui::ComboBox::from_id_salt("repo_branch_picker").selected_text(lang::view(&status.branch)).show_ui(ui, |ui| {
+                            for branch in &status.branches {
+                                let label =
+                                    if branch.upstream.is_empty() { branch.name.clone() } else { format!("{} — {}", branch.name, branch.upstream) };
+                                if ui.selectable_label(branch.current, lang::view(&label)).clicked() && !branch.current {
+                                    action = Some(("repo.branches", serde_json::json!({"switch": branch.name})));
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.repo_branch_new).hint_text(lang::view(s.repo_new_branch)).desired_width(210.0),
+                            );
+                            if ui.add_enabled(!self.repo_branch_new.trim().is_empty(), egui::Button::new(lang::view(s.repo_create_branch))).clicked()
+                            {
+                                action = Some(("repo.branches", serde_json::json!({"create": self.repo_branch_new.trim()})));
+                                self.repo_branch_new.clear();
+                            }
+                        });
+                    });
+
+                    egui::CollapsingHeader::new(lang::view(s.repo_changes_title)).default_open(status.conflicts == 0).show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(96.0).show(ui, |ui| {
+                            for change in &status.changes {
+                                ui.label(egui::RichText::new(format!("{} {}", change.status, change.path)).size(10.0).monospace());
+                            }
+                        });
+                    });
+                    if !status.conflict_paths.is_empty() {
+                        egui::CollapsingHeader::new(lang::view(s.repo_conflicts_title)).default_open(true).show(ui, |ui| {
+                            for path in &status.conflict_paths {
+                                ui.label(egui::RichText::new(path).size(10.0).monospace().color(theme::pal().error));
+                            }
+                        });
+                    }
+                    egui::CollapsingHeader::new(lang::view(s.repo_history_title)).default_open(false).show(ui, |ui| {
+                        for entry in &status.history {
+                            ui.label(
+                                egui::RichText::new(format!("{} {} {} {}", entry.commit, entry.date, entry.author, entry.subject))
+                                    .size(10.0)
+                                    .monospace(),
+                            );
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    ui.checkbox(&mut self.repo_stage_all, lang::view(s.repo_stage_all));
+                    let commit_edit =
+                        ui.add(egui::TextEdit::singleline(&mut self.repo_commit_msg).hint_text(lang::view(s.repo_commit_hint)).desired_width(430.0));
+                    if (ui
+                        .add_enabled(status.conflicts == 0 && !self.repo_commit_msg.trim().is_empty(), egui::Button::new(lang::view(s.repo_commit)))
+                        .clicked()
+                        || (commit_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.repo_commit_msg.trim().is_empty()))
+                        && status.conflicts == 0
+                    {
+                        commit_msg = self.repo_commit_msg.trim().to_string();
+                        action = Some(("repo.commit", serde_json::json!({"message": commit_msg, "stage": self.repo_stage_all})));
                     }
                 });
-                ui.add_space(4.0);
-                ui.checkbox(&mut self.repo_stage_all, lang::view(s.repo_stage_all));
-                let commit_edit =
-                    ui.add(egui::TextEdit::singleline(&mut self.repo_commit_msg).hint_text(lang::view(s.repo_commit_hint)).desired_width(330.0));
-                if (ui
-                    .add_enabled(status.conflicts == 0 && !self.repo_commit_msg.trim().is_empty(), egui::Button::new(lang::view(s.repo_commit)))
-                    .clicked()
-                    || (commit_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.repo_commit_msg.trim().is_empty()))
-                    && status.conflicts == 0
-                {
-                    commit_msg = self.repo_commit_msg.trim().to_string();
-                    action = Some(("repo.commit", serde_json::json!({"message": commit_msg, "stage": self.repo_stage_all})));
-                }
             });
         self.repo_open = open;
         if let Some((command, params)) = action {
@@ -3989,17 +4132,44 @@ impl WarraqApp {
 fn repo_status_from_json(v: &serde_json::Value) -> RepoStatus {
     let n = |key: &str| v.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
     let s = |key: &str| v.get(key).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    let rows = |key: &str| v.get(key).and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
     RepoStatus {
         git: v.get("git").and_then(serde_json::Value::as_bool).unwrap_or(false),
         in_repo: v.get("in_repo").and_then(serde_json::Value::as_bool).unwrap_or(false),
         branch: s("branch"),
         upstream: s("upstream"),
+        remote: s("remote"),
         remote_url: s("remote_url"),
         ahead: n("ahead"),
         behind: n("behind"),
         changed: n("changed"),
         conflicts: v.get("conflicts").and_then(serde_json::Value::as_array).map_or(0, |a| a.len() as u64),
         clean: v.get("clean").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        conflict_paths: rows("conflicts").iter().filter_map(|p| p.as_str().map(str::to_string)).collect(),
+        changes: rows("changes")
+            .iter()
+            .map(|r| RepoChange {
+                status: r.get("status").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                path: r.get("path").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+            })
+            .collect(),
+        branches: rows("branches")
+            .iter()
+            .map(|b| RepoBranch {
+                name: b.get("name").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                current: b.get("current").and_then(serde_json::Value::as_bool).unwrap_or(false),
+                upstream: b.get("upstream").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+            })
+            .collect(),
+        history: rows("history")
+            .iter()
+            .map(|h| RepoCommit {
+                commit: h.get("commit").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                date: h.get("date").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                author: h.get("author").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                subject: h.get("subject").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+            })
+            .collect(),
     }
 }
 
@@ -4528,14 +4698,19 @@ mod tests {
             "in_repo": true,
             "branch": "main",
             "upstream": "origin/main",
+            "remote": "origin",
             "remote_url": "https://***@example/repo.git",
             "ahead": 2,
             "behind": 1,
             "changed": 3,
             "conflicts": ["a.tex"],
+            "changes": [{"status": "M ", "path": "a.tex"}],
+            "branches": [{"name": "main", "current": true, "upstream": "origin/main"}],
+            "history": [{"commit": "abc123", "date": "2026-01-01", "author": "A", "subject": "start"}],
             "clean": false
         }));
         assert_eq!((st.branch.as_str(), st.ahead, st.behind, st.changed, st.conflicts), ("main", 2, 1, 3, 1));
+        assert_eq!((st.remote.as_str(), st.conflict_paths.len(), st.changes.len(), st.branches.len(), st.history.len()), ("origin", 1, 1, 1, 1));
         assert!(!st.clean);
         assert!(!repo_status_from_json(&serde_json::json!({})).in_repo);
     }

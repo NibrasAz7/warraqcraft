@@ -148,10 +148,10 @@ three paths separate:
 1. **File-based collaboration now** — users can place a project in Git,
    a synced folder or any existing version-control workflow.
 2. **Git-aware project integration** — implemented through `repo.status`,
-   `repo.init`, `repo.pull`, `repo.push`, `repo.commit`, `repo.branches`,
-   `repo.conflicts` and `repo.history`. Operations are explicit, guarded
-   against dirty/stale buffers, and preserve atomic saves; credentials
-   remain with Git rather than WarraqCraft preferences.
+   `repo.init`, `repo.remote`, `repo.pull`, `repo.push`, `repo.commit`,
+   `repo.branches`, `repo.conflicts` and `repo.history`. Operations are
+   explicit, guarded against dirty/stale buffers, and preserve atomic
+   saves; credentials remain with Git rather than WarraqCraft preferences.
 3. **Optional Overleaf-like session sync** — a later opt-in service or
    self-hosted relay could coordinate live sessions and shared cursors.
    It must never become required for editing or compiling.

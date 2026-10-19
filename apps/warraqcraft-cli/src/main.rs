@@ -215,6 +215,7 @@ const COMMANDS: &[&str] = &[
     "project.structure",
     "repo.status",
     "repo.init",
+    "repo.remote",
     "repo.pull",
     "repo.push",
     "repo.commit",

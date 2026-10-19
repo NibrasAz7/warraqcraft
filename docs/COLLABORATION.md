@@ -20,8 +20,11 @@ engine commands around the standard workflow rather than a new service.
 
 ### Proposed commands
 
-- `repo.status` — current branch, upstream, dirty files and ahead/behind.
-- `repo.pull` / `repo.push` — explicit user-triggered operations.
+- `repo.status` — current branch, upstream, dirty files, branch list,
+  recent history and ahead/behind.
+- `repo.remote` — add or update the sharing remote on an existing repo.
+- `repo.pull` / `repo.push` — explicit user-triggered operations; pull
+  selects fast-forward-only or explicit rebase.
 - `repo.commit` — staged project snapshot with a user-authored message.
 - `repo.branches` — list/create/switch, guarded against dirty buffers.
 - `repo.conflicts` — list conflicted paths and open merge guidance.
@@ -39,10 +42,12 @@ engine commands around the standard workflow rather than a new service.
 ### Implemented first slice
 
 The desktop UI shows a localized Git button plus the current branch when a
-repository is detected. The Git window exposes refresh, initialize, fast-
-forward pull, push and commit actions on a worker thread; remote URLs are
-redacted before display. Pull, push, commit and branch changes refuse to
-run while the editor buffer is dirty or while the open file is stale.
+repository is detected. The Git window exposes refresh, initialize,
+guided remote setup, fast-forward-or-rebase pull, push/upstream, branch
+selection/creation, conflict paths, recent history and commit actions on a
+worker thread; remote URLs are redacted before display. Pull, push, commit
+and branch changes refuse to run while the editor buffer is dirty or while
+the open file is stale.
 
 External modification is tracked with a file stamp captured on open/save
 and exposed through `document.disk_state`. Normal saves return an external-

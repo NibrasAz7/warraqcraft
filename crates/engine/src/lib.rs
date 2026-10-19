@@ -410,6 +410,7 @@ impl Session {
             // against the project repository; credentials stay with Git.
             "repo.status" => repo::status(self, params),
             "repo.init" => repo::init(self, params),
+            "repo.remote" => repo::remote(self, params),
             "repo.pull" => repo::pull(self, params),
             "repo.push" => repo::push(self, params),
             "repo.commit" => repo::commit(self, params),
@@ -944,11 +945,20 @@ mod tests {
         let mut s = Session::new();
         s.execute("document.open", &json!({"path": path})).unwrap();
         s.execute("repo.init", &json!({})).unwrap();
+        let remote = s.execute("repo.remote", &json!({"url": "https://user:secret@example.com/project.git"})).unwrap();
+        assert_eq!(remote["remote"], "origin");
+        assert_eq!(remote["remote_url"], "https://***@example.com/project.git");
+        let updated = s.execute("repo.remote", &json!({"name": "origin", "url": "https://example.com/project.git"})).unwrap();
+        assert_eq!(updated["updated"], true);
 
         let st = s.execute("repo.status", &json!({})).unwrap();
         assert_eq!(st["git"], true);
         assert_eq!(st["in_repo"], true);
         assert_eq!(st["untracked"], 1);
+        assert_eq!(st["remote_url"], "https://example.com/project.git");
+        assert!(st["branches"].is_array());
+        assert!(st["history"].is_array());
+        assert!(matches!(s.execute("repo.pull", &json!({"strategy": "ours"})), Err(EngineError::BadParam("strategy"))));
         s.execute("source.set", &json!({"text": "dirty\n"})).unwrap();
         assert!(matches!(s.execute("repo.pull", &json!({})), Err(EngineError::DirtyBuffer)));
     }
@@ -1005,6 +1015,7 @@ mod tests {
             "project.structure",
             "repo.status",
             "repo.init",
+            "repo.remote",
             "repo.pull",
             "repo.push",
             "repo.commit",

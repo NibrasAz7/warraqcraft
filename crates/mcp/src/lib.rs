@@ -79,6 +79,7 @@ const TOOL_COMMANDS: &[(&str, &str)] = &[
     ("project_structure", "project.structure"),
     ("repo_status", "repo.status"),
     ("repo_init", "repo.init"),
+    ("repo_remote", "repo.remote"),
     ("repo_pull", "repo.pull"),
     ("repo_push", "repo.push"),
     ("repo_commit", "repo.commit"),
@@ -491,11 +492,24 @@ fn tool_list() -> Vec<Value> {
             true,
         ),
         tool(
+            "repo_remote",
+            "Add or update a Git remote on the project repository. Writes the URL to Git config only; credentials are redacted in responses.",
+            json!({
+                "name": s("Remote name (default origin)."),
+                "url": s("Remote URL or local repository path."),
+                "timeout_s": { "type": "integer", "description": "Timeout in seconds, clamped 1-300." },
+            }),
+            &["url"],
+            false,
+            true,
+        ),
+        tool(
             "repo_pull",
-            "Run git pull --ff-only against the project repository. Network operation; refused while the buffer or file has unsaved/stale state.",
+            "Run git pull with the explicit strategy ff-only (default) or rebase. Network operation; refused while the buffer or file has unsaved/stale state.",
             json!({
                 "remote": s("Optional remote name."),
                 "branch": s("Optional branch name; requires remote."),
+                "strategy": { "type": "string", "enum": ["ff-only", "rebase"], "description": "Pull strategy: fast-forward only or rebase local commits." },
                 "timeout_s": { "type": "integer", "description": "Timeout in seconds, clamped 1-300 (default 120)." },
             }),
             &[],
@@ -678,7 +692,7 @@ mod tests {
         let mut s = McpServer::new();
         let r = rpc(&mut s, &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})).unwrap();
         let tools = r["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 36);
+        assert_eq!(tools.len(), 37);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for (name, _) in TOOL_COMMANDS {
             assert!(names.contains(name), "tools/list missing {name}");

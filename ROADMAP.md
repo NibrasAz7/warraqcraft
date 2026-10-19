@@ -169,3 +169,13 @@ widget) are tracked there — nothing in M0 depends on them.
   * UI adds a localized Git status/window and changed-on-disk modal with
     reload / save-over / keep-editing choices across the 16-language
     catalog; the same commands are exposed through CLI/control/MCP.
+- M6 Wave-2 — guided Git collaboration UX:
+  * `repo.remote` adds/updates a sharing remote without storing
+    credentials in preferences; init can now collect an optional remote
+    before creating `.git`.
+  * `repo.pull` exposes explicit `ff-only` or `rebase` strategy, while
+    `repo.status` returns bounded branch, change, conflict and recent-
+    history payloads for one consistent UI/CLI/control/MCP contract.
+  * The localized repository window now offers connect-remote guidance,
+    branch picker/create, upstream-on-push, changed/conflicted file lists
+    and recent commits.
