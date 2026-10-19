@@ -10,7 +10,7 @@ replace real desktop smoke testing.
 | --- | --- | --- | --- |
 | Windows | `dist/warraqcraft-<version>-windows-<arch>.zip` | `warraqcraft.exe`, `warraqcraft-cli.exe`, `templates/`, README, licences, NOTICE; `bin/tectonic.exe` when packed with `-IncludeTectonic` | Portable zip; unsigned binaries can trigger SmartScreen. |
 | macOS | `dist/warraqcraft-<version>-macos-<arch>.tar.gz`, `.dmg` | tarball plus `WarraqCraft.app`; app resources must include `templates/`, README, licences and NOTICE | Unsigned/unnotarized builds can be blocked by Gatekeeper. |
-| Linux | `dist/warraqcraft-<version>-linux-<arch>.tar.gz`, `.deb` | tarball; deb installs binaries to `/usr/bin`, templates to `/usr/share/warraqcraft/templates`, docs to `/usr/share/doc/warraqcraft`, and a desktop entry | `.deb` is an installable package, not a repository package; TeX/Tectonic remains external unless bundled separately. |
+| Linux | `dist/warraqcraft-<version>-linux-<arch>.tar.gz`, `.deb` | tarball; deb installs binaries to `/usr/bin`, templates to `/usr/share/warraqcraft/templates`, docs to `/usr/share/doc/warraqcraft`, and a desktop entry | `.deb` is an installable package, not a repository package; bundled Tectonic should use the musl Linux asset so it is not tied to the host glibc. |
 
 Template discovery must work in portable, app-bundle and installed Linux
 layouts. `WARRAQCRAFT_TEMPLATES` remains the explicit override for tests and
@@ -65,11 +65,33 @@ Manual GUI pass:
 - `scripts/package.sh` passed POSIX shell syntax checking;
   `scripts/package.ps1` passed PowerShell parsing and produced the tested
   zip. The three-OS CI/release workflow definitions were inspected.
-- macOS and Linux artifacts still require execution on real macOS/Linux
-  hosts or CI runners; package layout discovery was updated so `.app`
-  `Contents/Resources/templates` and `/usr/share/warraqcraft/templates`
-  are found.
+- **Linux x86_64 — passed in Ubuntu 22.04 WSL2/WSLg.** Artifacts:
+  `warraqcraft-0.1.0-linux-x86_64.tar.gz`
+  SHA-256: `f2b664a829cf4c90b69a6ee616276fea2f7ff28e5688287a2b28eedcd9763178`;
+  `warraqcraft-0.1.0-linux-x86_64.deb`
+  SHA-256: `4e07ad09a07b39556665423a9531a003df0b5bf8511a85dbcfb99cf55b2daace`.
+- The tarball contained both executables, all 20 templates, README,
+  licences and NOTICE. The packaged CLI listed commands, returned all 20
+  templates, produced project structure, and completed MCP
+  `initialize`/`tools/list` with 37 tools.
+- The packaged GUI launched through WSLg, served control-channel
+  `source.get`, `document.disk_state` and `document.compile`, and stayed
+  alive through compile. The Linux musl Tectonic binary produced
+  `/root/wc-linux-smoke/.warraqcraft/main.pdf` with one page.
+- External disk modification made `document.disk_state` report
+  `external_changed: true`; a normal save was refused and
+  `document.save {"overwrite":true}` succeeded.
+- The `.deb` installed with `dpkg -i`; `/usr/bin/warraqcraft-cli` found
+  all 20 templates from `/usr/share/warraqcraft/templates`, the desktop
+  entry installed, and `/usr/bin/warraqcraft` served the control channel.
+- Linux packaging found two issues that are fixed here:
+  `scripts/package.sh` needs an executable bit for a POSIX checkout, and
+  the Tectonic fetcher needs `x86_64-unknown-linux-musl` because the
+  glibc build requires a newer glibc than Ubuntu 22.04.
+- macOS artifacts still require execution on a real macOS host or CI
+  runner; `.app` `Contents/Resources/templates` discovery is covered by
+  the added path check but remains runtime-unverified.
 
-An earlier exploratory packaged run exited before a follow-up control
-call. A clean rerun stayed alive through the same compile path, so this
-was not reproduced; keep watching for it during platform QA.
+An earlier exploratory Windows packaged run exited before a follow-up
+control call. A clean rerun stayed alive through the same compile path,
+so this was not reproduced; keep watching for it during platform QA.

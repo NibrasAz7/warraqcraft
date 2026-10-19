@@ -194,5 +194,6 @@ widget) are tracked there — nothing in M0 depends on them.
     `Contents/Resources/templates` and Linux
     `<prefix>/share/warraqcraft/templates`; the `.deb` gains a desktop
     entry and the `.app` carries licences/docs.
-  * `docs/RELEASE-QA.md` records the artifact checklist, Windows result
-    and remaining real-device macOS/Linux validation steps.
+  * `docs/RELEASE-QA.md` records the artifact checklist, Windows result,
+    Ubuntu 22.04 WSL2 result and the remaining real-device macOS
+    validation steps.

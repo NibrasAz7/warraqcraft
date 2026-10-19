@@ -62,7 +62,7 @@ research track.
 | Platform | State |
 | --- | --- |
 | Windows | Release zip built and smoke-tested locally via `scripts/package.ps1` |
-| Linux | CI target; release tarball and `.deb` via `scripts/package.sh` |
+| Linux | Release tarball and `.deb` built and smoke-tested on Ubuntu 22.04 WSL2 via `scripts/package.sh` |
 | macOS | CI target; release `.app` bundle and `.dmg` via `scripts/package.sh` |
 | WASM | Lower parsing/catalog crates are checked with `cargo xtask wasm` |
 

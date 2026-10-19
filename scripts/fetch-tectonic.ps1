@@ -15,7 +15,7 @@ New-Item -ItemType Directory -Force -Path $bin | Out-Null
 # Map this platform to a Tectonic release asset name.
 $rid = if ($IsWindows -or $env:OS -eq "Windows_NT") { "x86_64-pc-windows-msvc" }
        elseif ($IsMacOS) { "x86_64-apple-darwin" }
-       else { "x86_64-unknown-linux-gnu" }
+       else { "x86_64-unknown-linux-musl" }
 $exe = if ($rid -match "windows") { "tectonic.exe" } else { "tectonic" }
 $ext = if ($rid -match "windows|darwin") { "zip" } else { "tar.gz" }
 
