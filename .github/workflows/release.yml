@@ -55,6 +55,56 @@ jobs:
         if: runner.os != 'Windows'
         run: ./scripts/package.sh "$WARRAQCRAFT_VERSION"
 
+      - name: Smoke packaged CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $cli = (Get-ChildItem "dist\warraqcraft-*\warraqcraft-cli.exe" | Select-Object -First 1).FullName
+          & $cli commands | Out-Null
+          & $cli cmd template.list | Out-Null
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\wc-smoke" | Out-Null
+          Set-Content "$env:RUNNER_TEMP\wc-smoke\main.tex" "\begin{document}`nhi`n\end{document}`n"
+          & $cli cmd project.structure --file "$env:RUNNER_TEMP\wc-smoke\main.tex" | Out-Null
+          @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release-ci","version":"1"}}}',
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+          ) | & $cli mcp | Out-Null
+
+      - name: Smoke packaged CLI (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          cli="$(echo dist/warraqcraft-*/warraqcraft-cli)"
+          "$cli" commands >/dev/null
+          "$cli" cmd template.list >/dev/null
+          mkdir -p "$RUNNER_TEMP/wc-smoke"
+          printf '\\begin{document}\nhi\n\\end{document}\n' > "$RUNNER_TEMP/wc-smoke/main.tex"
+          "$cli" cmd project.structure --file "$RUNNER_TEMP/wc-smoke/main.tex" >/dev/null
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release-ci","version":"1"}}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+            | "$cli" mcp >/dev/null
+
+      - name: Smoke packaged GUI control channel (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cli="$(echo dist/warraqcraft-*/warraqcraft-cli)"
+          ctl="$RUNNER_TEMP/wc-smoke/control.json"
+          dist/WarraqCraft.app/Contents/MacOS/warraqcraft --control "$ctl" "$RUNNER_TEMP/wc-smoke/main.tex" &
+          app_pid=$!
+          ready=0
+          for _ in $(seq 1 60); do
+            if [ -f "$ctl" ]; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" != "1" ]; then
+            echo "control file never appeared — packaged .app did not start" >&2
+            kill "$app_pid" 2>/dev/null || true
+            exit 1
+          fi
+          "$cli" ui --control "$ctl" source.get >/dev/null
+          "$cli" ui --control "$ctl" document.disk_state >/dev/null
+          kill "$app_pid" 2>/dev/null || true
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

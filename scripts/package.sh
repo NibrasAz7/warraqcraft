@@ -66,8 +66,10 @@ EOF
         echo "dist/$archive_base.dmg"
     fi
 elif [ "$os_name" = "linux" ] && command -v dpkg-deb >/dev/null 2>&1; then
-    pkgroot="dist/deb-root"
-    rm -rf "$pkgroot"
+    # Stage on a native filesystem: drvfs/network checkouts report 777
+    # and ignore chmod, and dpkg-deb refuses DEBIAN dirs above 0775.
+    stage_root="$(mktemp -d)"
+    pkgroot="$stage_root/deb-root"
     mkdir -p "$pkgroot/DEBIAN" "$pkgroot/usr/bin" "$pkgroot/usr/share/applications" \
         "$pkgroot/usr/share/warraqcraft" "$pkgroot/usr/share/doc/warraqcraft"
     cp target/release/warraqcraft target/release/warraqcraft-cli "$pkgroot/usr/bin/"
@@ -94,6 +96,11 @@ Architecture: amd64
 Maintainer: WarraqCraft contributors
 Description: Local-first LaTeX authoring and typesetting studio
 EOF
+    # Normalize permissions for the staged copy.
+    find "$pkgroot" -type d -exec chmod 755 {} +
+    find "$pkgroot" -type f -exec chmod 644 {} +
+    chmod 755 "$pkgroot/usr/bin/warraqcraft" "$pkgroot/usr/bin/warraqcraft-cli"
     dpkg-deb --build "$pkgroot" "dist/$archive_base.deb" >/dev/null
+    rm -rf "$stage_root"
     echo "dist/$archive_base.deb"
 fi

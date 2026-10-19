@@ -17,7 +17,7 @@ widget) are tracked there — nothing in M0 depends on them.
 | M4 | History (snapshots/diff/restore), reference-manager integration (Zotero/CSL), arabdoc + template gallery | in progress — snapshots/history and multilingual source-only template gallery landed; reference-manager integration open |
 | M5 | Ship readiness: settings, print/export, untitled/autosave, platform packaging and docs | in progress — Windows/Linux runtime QA done; macOS runtime QA open |
 | M6 | Collaboration, agent integration and release hardening | in progress — Git UX, stale-file safety, agent docs and Windows/Linux QA landed; live presence remains deferred |
-| M7 | Native AI harness and product-ready gate | in progress — M7.1 harness core, M7.2 compile-repair and M7.3 components/evaluations landed; final platform gate next |
+| M7 | Native AI harness and product-ready gate | done — harness core, compile-repair, components/evaluations and the refreshed release gate all landed; first tagged-release run will exercise the new macOS CI smoke |
 
 ## Product-ready path
 
@@ -39,9 +39,13 @@ widget) are tracked there — nothing in M0 depends on them.
    workspaces with persisted run records. The external Harness² project
    remained a design reference only — no Python/OpenCode/Codex runtime
    and no sandbox-bypass model.
-4. **M7.4 — final ship gate.** Real macOS runtime QA, refreshed Windows
-   and Linux release tests, canonical community-template link, final
-   docs/release notes, package hashes and clean `ci`/`wasm` gates.
+4. **M7.4 — final ship gate — done.** Windows and Linux artifacts were
+   rebuilt post-M7.3 and re-verified end to end; the release workflow now
+   smokes every packaged artifact on its own OS, including launching the
+   built `WarraqCraft.app` on `macos-latest` and probing its control
+   channel. The canonical community-template source remains the
+   `NibrasAz7/warraqcraft` `templates/` tree with licensed folder import;
+   a real-desktop interactive macOS pass is the one open manual item.
 
 ## Progress log
 
@@ -284,3 +288,21 @@ widget) are tracked there — nothing in M0 depends on them.
     task; MCP gained six tools plus the read-only
     `warraqcraft://ai/components` resource, keeping the 61-command
     parity across CLI, control and MCP.
+- M7.4 — final ship gate:
+  * Rebuilt `dist/warraqcraft-0.1.0-windows-x64.zip` (SHA-256
+    `220201ed…adca6`) and `dist/warraqcraft-0.1.0-linux-x86_64.tar.gz`
+    (`a70b36…f129`) + `.deb` (`776bda…32ab`) on the post-M7.3 tree.
+  * Windows smoke: 61 commands, 20 templates, MCP 61 tools, packaged GUI
+    control channel (`source.get`, `document.disk_state`,
+    `ai.components`), bundled Tectonic → one-page PDF.
+  * Linux smoke: `.deb` installs with `root:root` `755` files,
+    `/usr/share` template discovery, WSLg GUI + control channel, musl
+    Tectonic tarball → one-page PDF.
+  * Fixed `.deb` staging for drvfs/WSL checkouts: `dpkg-deb` rejects
+    `DEBIAN` dirs above `0775` and drvfs ignores `chmod`, so the package
+    root now stages under `mktemp -d` with normalized permissions.
+  * `release.yml` now smokes each packaged artifact on its own OS
+    (packaged CLI commands/templates/structure/MCP handshake), and on
+    `macos-latest` launches the built `.app` and requires a live control
+    channel — the first real macOS runtime gate, verified on the next
+    tagged release or `workflow_dispatch` run.

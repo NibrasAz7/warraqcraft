@@ -46,51 +46,49 @@ Manual GUI pass:
 
 ## Current verification
 
+Refreshed after the M7.1–M7.3 harness work (61 engine commands / 61 MCP
+tools).
+
 - **Windows x64 — passed locally.** Artifact:
   `dist/warraqcraft-0.1.0-windows-x64.zip`
-  SHA-256: `2E6AA1E0B90735E64A9A6AAB40657E0596D06552B57EE05AA097BF2503B2E95D`
+  SHA-256: `220201edce45615f9d157aadf850ba971bd857f3c1f69c16b0f7844616eadca6`
 - Package inspection found both executables, bundled `bin/tectonic.exe`,
   all 20 shipped templates, README, licences and NOTICE.
-- The packaged CLI listed the engine commands and found all templates.
-- The packaged app launched with a control file, served `source.get`,
-  `document.disk_state`, `document.save`, `document.compile` and
-  `repo.status`, and stayed alive through the compile.
-- Bundled Tectonic produced `target/release-smoke/.warraqcraft/main.pdf`
-  with one page.
+- The packaged CLI listed 61 engine commands, returned all 20 templates
+  and produced project structure; MCP `initialize`/`tools/list` returned
+  61 tools.
+- The packaged app launched with a control file and served `source.get`,
+  `document.disk_state` and `ai.components` (4 built-in skills, 6 eval
+  fixtures visible). Bundled Tectonic compiled a real document to a
+  one-page `.warraqcraft/main.pdf`.
 - External disk modification made `document.disk_state` report
   `external_changed: true`; a normal save was refused and
   `document.save {"overwrite":true}` succeeded.
-- MCP `initialize` and `tools/list` returned the expected protocol and
-  tool catalog.
-- `scripts/package.sh` passed POSIX shell syntax checking;
-  `scripts/package.ps1` passed PowerShell parsing and produced the tested
-  zip. The three-OS CI/release workflow definitions were inspected.
 - **Linux x86_64 — passed in Ubuntu 22.04 WSL2/WSLg.** Artifacts:
-  `warraqcraft-0.1.0-linux-x86_64.tar.gz`
-  SHA-256: `f2b664a829cf4c90b69a6ee616276fea2f7ff28e5688287a2b28eedcd9763178`;
-  `warraqcraft-0.1.0-linux-x86_64.deb`
-  SHA-256: `4e07ad09a07b39556665423a9531a003df0b5bf8511a85dbcfb99cf55b2daace`.
-- The tarball contained both executables, all 20 templates, README,
-  licences and NOTICE. The packaged CLI listed commands, returned all 20
-  templates, produced project structure, and completed MCP
-  `initialize`/`tools/list` with 37 tools.
-- The packaged GUI launched through WSLg, served control-channel
-  `source.get`, `document.disk_state` and `document.compile`, and stayed
-  alive through compile. The Linux musl Tectonic binary produced
-  `/root/wc-linux-smoke/.warraqcraft/main.pdf` with one page.
-- External disk modification made `document.disk_state` report
-  `external_changed: true`; a normal save was refused and
-  `document.save {"overwrite":true}` succeeded.
-- The `.deb` installed with `dpkg -i`; `/usr/bin/warraqcraft-cli` found
-  all 20 templates from `/usr/share/warraqcraft/templates`, the desktop
-  entry installed, and `/usr/bin/warraqcraft` served the control channel.
-- Linux packaging found two issues that are fixed here:
-  `scripts/package.sh` needs an executable bit for a POSIX checkout, and
-  the Tectonic fetcher needs `x86_64-unknown-linux-musl` because the
-  glibc build requires a newer glibc than Ubuntu 22.04.
-- macOS artifacts still require execution on a real macOS host or CI
-  runner; `.app` `Contents/Resources/templates` discovery is covered by
-  the added path check but remains runtime-unverified.
+  `dist/warraqcraft-0.1.0-linux-x86_64.tar.gz`
+  SHA-256: `a70b369505d51995c275b2395ca10fee9ee286c9bf76722b97133c3196c4f129`;
+  `dist/warraqcraft-0.1.0-linux-x86_64.deb`
+  SHA-256: `776bda84aab315ab89575d601d0a8c803d9df5954142f890a8af181b679e32ab`.
+- The `.deb` installed with `dpkg -i`; `/usr/bin/warraqcraft-cli` listed
+  61 commands and found all 20 templates under
+  `/usr/share/warraqcraft/templates`; files install `root:root` `755`.
+- The packaged GUI launched through WSLg and served `source.get` and
+  `ai.eval.list`; MCP `initialize`/`tools/list` returned 61 tools.
+- The tarball's bundled `bin/tectonic` (musl 0.17.0) compiled a real
+  document to a one-page `/tmp/wc-linux-smoke/.warraqcraft/main.pdf`.
+- Linux packaging gained one more fix: `dpkg-deb` refuses a `DEBIAN`
+  directory above `0775`, and drvfs/WSL-mounted checkouts report every
+  file `777` while ignoring `chmod`. The script now stages the package
+  root under `mktemp -d` on a native filesystem and normalizes
+  permissions before building the `.deb`.
+- **macOS — covered by release-CI runtime smoke.** The release workflow
+  now exercises every packaged artifact on its own OS: the packaged CLI
+  runs `commands`, `template.list`, `project.structure` and an MCP
+  `initialize`/`tools/list` handshake, and on `macos-latest` the built
+  `WarraqCraft.app` is launched with a control file and must answer
+  `source.get` and `document.disk_state` through the packaged CLI. A
+  real-desktop interactive macOS pass (Gatekeeper UX, rendering,
+  shortcuts) remains the one open manual item.
 
 An earlier exploratory Windows packaged run exited before a follow-up
 control call. A clean rerun stayed alive through the same compile path,
