@@ -65,6 +65,32 @@ const PROJECT_PROMPTS: &[(&str, &str, &str)] = &[
     ("project.tool_guidance", "tool_guidance", "tool_guidance.md"),
 ];
 
+/// Built-in skills version. Bump with the skill text.
+pub const SKILLS_VERSION: &str = "2026-03-01.1";
+
+/// Versioned built-in skills — on-demand capability text an agent (or a
+/// user) can fetch once a task calls for it, keeping the always-on
+/// prompt small. Project skills are `*.md` files under
+/// `.warraqcraft/ai/skills/` and are listed alongside these.
+const BUILTIN_SKILLS: &[(&str, &str)] = &[
+    (
+        "compile_repair",
+        "Repair a compile failure without a model call: run structure.get for structural issues, then ai.repair.preview (compile:true when the buffer is clean). Review plan.edits — they are line-level insert_before/replace_line/delete_line operations, each with a `before` anchor. Approve with ai.task.approve, then apply with ai.repair.apply; the task records before/after error counts. If the apply fails on a stale buffer, preview again instead of hand-editing.",
+    ),
+    (
+        "diagnostics_triage",
+        "Read diagnostics before editing: structure.get reports file-attributed structural issues, document.compile reports engine errors/warnings. Prefer the structural list first — it is free and never writes. A mismatch `\\end{x} but \\begin{y}` means the open env is `y`; `unclosed \\begin{z}` means a missing closer; `\\end{w} without \\begin` is a stray line. Ambiguous issues (unclosed braces, undefined commands) get no automatic patch — report them instead of guessing.",
+    ),
+    (
+        "safe_edits",
+        "Prefer the smallest edit that fixes the diagnostic: a single line change beats a whole-buffer rewrite. Never write source.set unless the buffer fingerprint was checked or the user approved a full replacement. Keep changes inside the project; never touch files outside the document root. Report exact changed paths after every mutation.",
+    ),
+    (
+        "project_context",
+        "Multi-file documents: project.structure merges the outline across the \\input/\\include graph and reports missing dependencies; project.graph lists edges. Compile diagnostics carry file+line — open that file before proposing an edit. Cite keys come from project .bib files; do not invent keys.",
+    ),
+];
+
 /// Permission tiers used by `ai.plan.preview` and the audit log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
@@ -134,7 +160,12 @@ pub fn permission(command: &str, params: &Value) -> Option<Permission> {
         | "ai.permissions"
         | "ai.prompt.list"
         | "ai.prompt.get"
-        | "ai.audit.list" => Permission::new(Tier::ReadOnly, false, "read-only inspection"),
+        | "ai.audit.list"
+        | "ai.skill.list"
+        | "ai.skill.get"
+        | "ai.components"
+        | "ai.task.evidence"
+        | "ai.eval.list" => Permission::new(Tier::ReadOnly, false, "read-only inspection"),
         "ai.plan.preview" if params.get("task_id").is_some() => {
             Permission::new(Tier::FilesystemWrite, false, "stores the dry-run plan on a durable task")
         }
@@ -144,6 +175,7 @@ pub fn permission(command: &str, params: &Value) -> Option<Permission> {
         }
         "ai.repair.preview" => Permission::new(Tier::ExternalProcess, true, "compiles to gather diagnostics and stores a repair plan"),
         "ai.repair.apply" => Permission::new(Tier::ExternalProcess, true, "applies an approved patch, saves and recompiles"),
+        "ai.eval.run" => Permission::new(Tier::FilesystemWrite, false, "runs deterministic fixtures in an isolated workspace and records results"),
         "document.new" | "document.open" if params.get("discard").and_then(Value::as_bool) == Some(true) => {
             Permission::new(Tier::Destructive, true, "can discard the dirty buffer")
         }
@@ -637,6 +669,120 @@ pub fn prompt_get(sess: &Session, params: &Value) -> Result<Value, EngineError> 
     Err(EngineError::BadParam("id"))
 }
 
+/// `ai.skill.list` — built-in skills plus project `*.md` files under
+/// `.warraqcraft/ai/skills/`.
+pub fn skill_list(sess: &Session, _params: &Value) -> Result<Value, EngineError> {
+    let mut skills: Vec<Value> = BUILTIN_SKILLS
+        .iter()
+        .map(|(name, text)| json!({"id": format!("skill:{name}"), "name": name, "version": SKILLS_VERSION, "source": "builtin", "bytes": text.len()}))
+        .collect();
+    let dir = sess.ai_root().join("skills");
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.take(128) {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Some(name) = path.file_stem().and_then(|n| n.to_str()).filter(|n| valid_task_id(n).is_some()) else { continue };
+            let Ok(meta) = path.metadata() else { continue };
+            skills.push(json!({
+                "id": format!("skill:{name}"),
+                "name": name,
+                "version": format!("file:{}", meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis()).unwrap_or(0)),
+                "source": "project",
+                "path": path.display().to_string(),
+                "bytes": meta.len(),
+            }));
+        }
+    }
+    Ok(json!({"skills": skills}))
+}
+
+/// `ai.skill.get` — the text of one skill. `id`/`name` accepts
+/// `skill:<name>` or a bare `<name>`; project files shadow nothing —
+/// built-ins are checked first.
+pub fn skill_get(sess: &Session, params: &Value) -> Result<Value, EngineError> {
+    let raw = params.get("id").or_else(|| params.get("name")).and_then(Value::as_str).ok_or(EngineError::BadParam("id"))?;
+    let name = raw.strip_prefix("skill:").unwrap_or(raw);
+    valid_task_id(name).ok_or(EngineError::BadParam("id"))?;
+    if let Some((name, text)) = BUILTIN_SKILLS.iter().find(|(n, _)| *n == name) {
+        return Ok(json!({"id": format!("skill:{name}"), "name": name, "version": SKILLS_VERSION, "source": "builtin", "text": text}));
+    }
+    let path = sess.ai_root().join("skills").join(format!("{name}.md"));
+    match path.metadata() {
+        Ok(meta) if meta.len() > MAX_PROMPT_FILE => return Err(EngineError::Tool("skill file exceeds the 64 KiB limit".into())),
+        Ok(_) => {}
+        Err(_) => return Err(EngineError::Tool("skill not found".into())),
+    }
+    let text = fs::read_to_string(&path).map_err(|_| EngineError::Tool("skill not found".into()))?;
+    Ok(json!({"id": format!("skill:{name}"), "name": name, "version": "file", "source": "project", "path": path.display().to_string(), "text": text}))
+}
+
+/// `ai.components` — the inspectable harness component tree: prompts,
+/// guardrails, tool guidance, skills, memory scopes, tasks, audit and
+/// eval runs. Read-only summary counts; fetch full records through the
+/// per-component commands.
+pub fn components(sess: &Session, _params: &Value) -> Result<Value, EngineError> {
+    let prompts = prompt_list(sess, &json!({}))?["prompts"].clone();
+    let skills = skill_list(sess, &json!({}))?["skills"].clone();
+
+    let mut memory = Vec::new();
+    let mut task_memory_total = 0usize;
+    for scope in MEMORY_SCOPES {
+        let entries = match *scope {
+            "session" => sess.ai_session_memory().len(),
+            "task" => continue, // counted per task below
+            _ => read_memory_file(&memory_path(sess, scope), scope)?.len(),
+        };
+        memory.push(json!({"scope": scope, "entries": entries}));
+    }
+
+    let mut states = Map::new();
+    let mut task_total = 0usize;
+    let mut with_plan = 0usize;
+    let mut checkpoints = 0usize;
+    for path in task_files(sess)? {
+        let Ok(task) = read_json(&path) else { continue };
+        task_total += 1;
+        let state = task.get("state").and_then(Value::as_str).unwrap_or("draft");
+        let count = states.get(state).and_then(Value::as_u64).unwrap_or(0) + 1;
+        states.insert(state.to_string(), Value::from(count));
+        if task.get("plan").is_some() {
+            with_plan += 1;
+        }
+        checkpoints += task.get("checkpoints").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+        task_memory_total += task_memory_entries(&task).len();
+    }
+    memory.push(json!({"scope": "task", "entries": task_memory_total}));
+
+    let audit_path = sess.ai_root().join("audit.jsonl");
+    let audit_bytes = audit_path.metadata().map(|m| m.len()).unwrap_or(0);
+    let audit_events = fs::read_to_string(&audit_path).map(|t| t.lines().count()).unwrap_or(0);
+
+    let eval_dir = crate::ai_eval::eval_dir(sess);
+    let eval_runs =
+        fs::read_dir(&eval_dir).map(|rd| rd.flatten().filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json")).count()).unwrap_or(0);
+
+    Ok(json!({
+        "prompts": prompts,
+        "skills": skills,
+        "memory": memory,
+        "tasks": {"total": task_total, "by_state": states, "with_plan": with_plan, "checkpoints": checkpoints},
+        "audit": {"events": audit_events, "bytes": audit_bytes},
+        "evals": {"cases": crate::ai_eval::CASE_COUNT, "runs": eval_runs},
+    }))
+}
+
+/// `ai.task.evidence` — the per-task evidence bundle: the full task
+/// record (plan, checkpoints, result, changed paths), its task-scope
+/// memory and the audit events attributed to it.
+pub fn task_evidence(sess: &Session, params: &Value) -> Result<Value, EngineError> {
+    let id = required_task_id(params)?;
+    let task = load_task(sess, id)?;
+    let audit = audit_list(sess, &json!({"task_id": id, "limit": MAX_AUDIT_KEEP}))?["events"].clone();
+    Ok(json!({"ok": true, "task": task, "memory": task_memory_entries(&task), "audit": audit}))
+}
+
 /// `ai.audit.list` — read the redacted audit trail, newest last.
 pub fn audit_list(sess: &Session, params: &Value) -> Result<Value, EngineError> {
     let limit = optional_usize(params, "limit", 100, MAX_AUDIT_KEEP)?;
@@ -699,6 +845,7 @@ fn should_audit(command: &str) -> bool {
             | "ai.memory.import"
             | "ai.repair.preview"
             | "ai.repair.apply"
+            | "ai.eval.run"
             | "document.new"
             | "document.open"
             | "document.save"
@@ -783,6 +930,9 @@ fn changed_paths(sess: &Session, command: &str, params: &Value, result: &Result<
         if let Some(id) = task_id.as_str().and_then(valid_task_id) {
             paths.push(Value::from(task_path(sess, id).display().to_string()));
         }
+    }
+    if command == "ai.eval.run" {
+        paths.push(Value::from(crate::ai_eval::eval_dir(sess).display().to_string()));
     }
 
     if matches!(command, "ai.memory.set" | "ai.memory.delete" | "ai.memory.import") {
@@ -1215,5 +1365,72 @@ mod tests {
         assert!(matches!(task_get(&sess, &json!({"task_id": "../escape"})), Err(EngineError::BadParam("task_id"))));
         assert!(matches!(memory_scope(&json!({"scope": "root"})), Err(EngineError::BadParam("scope"))));
         assert!(matches!(plan_preview(&sess, &json!({"commands": []})), Err(EngineError::BadParam("commands"))));
+    }
+
+    #[test]
+    fn skills_list_get_and_project_files() {
+        let dir = TempDir::new("skills");
+        let sess = session(&dir.0);
+        let listed = skill_list(&sess, &json!({})).unwrap()["skills"].as_array().unwrap().clone();
+        assert_eq!(listed.iter().filter(|s| s["source"] == "builtin").count(), BUILTIN_SKILLS.len());
+        assert!(listed.iter().all(|s| s["version"].is_string() && s["bytes"].is_u64()));
+        let got = skill_get(&sess, &json!({"id": "skill:safe_edits"})).unwrap();
+        assert!(got["text"].as_str().unwrap().contains("fingerprint"));
+        assert_eq!(skill_get(&sess, &json!({"id": "safe_edits"})).unwrap()["version"], SKILLS_VERSION);
+        // Project skills join the listing and shadow nothing.
+        let skills_dir = dir.0.join(".warraqcraft/ai/skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(skills_dir.join("journal_style.md"), "Follow the journal style.").unwrap();
+        fs::write(skills_dir.join("not-a-skill.txt"), "ignored").unwrap();
+        let listed = skill_list(&sess, &json!({})).unwrap()["skills"].as_array().unwrap().clone();
+        assert_eq!(listed.iter().filter(|s| s["source"] == "project").count(), 1);
+        assert_eq!(skill_get(&sess, &json!({"name": "journal_style"})).unwrap()["text"], "Follow the journal style.");
+        // Oversized project skill is rejected; unknown and traversal ids fail closed.
+        fs::write(skills_dir.join("huge.md"), "x".repeat(MAX_PROMPT_FILE as usize + 1)).unwrap();
+        assert!(matches!(skill_get(&sess, &json!({"id": "huge"})), Err(EngineError::Tool(_))));
+        assert!(matches!(skill_get(&sess, &json!({"id": "missing"})), Err(EngineError::Tool(_))));
+        assert!(matches!(skill_get(&sess, &json!({"id": "../escape"})), Err(EngineError::BadParam("id"))));
+        assert!(matches!(skill_get(&sess, &json!({})), Err(EngineError::BadParam("id"))));
+    }
+
+    #[test]
+    fn components_tree_is_inspectable() {
+        let dir = TempDir::new("components");
+        let mut sess = session(&dir.0);
+        sess.execute("ai.task.create", &json!({"title": "tree"})).unwrap();
+        sess.execute("ai.memory.set", &json!({"scope": "project", "key": "engine", "value": "tectonic"})).unwrap();
+        memory_set(&mut sess, &json!({"scope": "session", "key": "tone", "value": "concise"})).unwrap();
+        let tree = components(&sess, &json!({})).unwrap();
+        assert!(tree["prompts"].as_array().unwrap().len() >= BUILTIN_PROMPTS.len());
+        assert!(tree["skills"].as_array().unwrap().len() >= BUILTIN_SKILLS.len());
+        assert_eq!(tree["tasks"]["total"], 1);
+        assert_eq!(tree["tasks"]["by_state"]["draft"], 1);
+        let memory = tree["memory"].as_array().unwrap();
+        assert_eq!(memory.len(), MEMORY_SCOPES.len());
+        assert!(memory.iter().any(|m| m["scope"] == "project" && m["entries"] == 1));
+        assert!(memory.iter().any(|m| m["scope"] == "session" && m["entries"] == 1));
+        assert_eq!(tree["evals"]["cases"], crate::ai_eval::CASE_COUNT as u64);
+        assert!(tree["audit"]["events"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn task_evidence_bundles_task_memory_and_audit() {
+        let dir = TempDir::new("evidence");
+        let mut sess = session(&dir.0);
+        let created = sess.execute("ai.task.create", &json!({"title": "evid"})).unwrap();
+        let id = created["task_id"].as_str().unwrap().to_string();
+        memory_set(&mut sess, &json!({"scope": "task", "task_id": id, "key": "note", "value": "checked"})).unwrap();
+        let other = sess.execute("ai.task.create", &json!({"title": "other"})).unwrap();
+        let other_id = other["task_id"].as_str().unwrap().to_string();
+        let ev = task_evidence(&sess, &json!({"task_id": id})).unwrap();
+        assert_eq!(ev["task"]["title"], "evid");
+        assert_eq!(ev["memory"].as_array().unwrap().len(), 1);
+        assert_eq!(ev["memory"][0]["value"], "checked");
+        let events = ev["audit"].as_array().unwrap();
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|e| e["task_id"] == id));
+        assert!(events.iter().all(|e| e["task_id"] != other_id));
+        assert!(task_evidence(&sess, &json!({"task_id": "missing"})).is_err());
+        assert!(matches!(task_evidence(&sess, &json!({"task_id": "../escape"})), Err(EngineError::BadParam("task_id"))));
     }
 }

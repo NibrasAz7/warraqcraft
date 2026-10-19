@@ -3850,6 +3850,8 @@ impl WarraqApp {
             PreviewPlan,
             RepairPreview,
             RepairApply,
+            RunEvals(Option<String>),
+            TaskEvidence,
             MemoryScope(&'static str),
             MemorySet,
             MemoryDelete(String),
@@ -3910,6 +3912,9 @@ impl WarraqApp {
                     }
                     if !matches!(state.as_str(), "completed" | "failed" | "cancelled") && ui.button(lang::view(s.ai_task_cancel)).clicked() {
                         action = Action::CancelTask;
+                    }
+                    if ui.button(lang::view(s.ai_evidence)).clicked() {
+                        action = Action::TaskEvidence;
                     }
                 });
                 if task.pointer("/plan/kind").and_then(Value::as_str) == Some("compile_repair") {
@@ -4011,6 +4016,39 @@ impl WarraqApp {
             }
         });
 
+        egui::CollapsingHeader::new(lang::view(s.ai_skills)).default_open(false).show(ui, |ui| {
+            for skill in &self.harness.skills {
+                let id = skill.get("id").and_then(Value::as_str).unwrap_or_default();
+                let version = skill.get("version").and_then(Value::as_str).unwrap_or_default();
+                let source = skill.get("source").and_then(Value::as_str).unwrap_or_default();
+                ui.label(egui::RichText::new(format!("{id} — {version} ({source})")).size(10.0).monospace());
+            }
+        });
+
+        egui::CollapsingHeader::new(lang::view(s.ai_evals)).default_open(false).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button(lang::view(s.ai_eval_run)).clicked() {
+                    action = Action::RunEvals(None);
+                }
+                if let Some(result) = &self.harness.eval_result {
+                    let passed = result.get("passed").and_then(Value::as_u64).unwrap_or(0);
+                    let failed = result.get("failed").and_then(Value::as_u64).unwrap_or(0);
+                    let color = if failed == 0 { theme::pal().accent_dim } else { theme::pal().error };
+                    ui.label(egui::RichText::new(format!("{passed} ok · {failed} err")).size(10.5).color(color));
+                }
+            });
+            for case in &self.harness.evals {
+                let id = case.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                let name = case.get("name").and_then(Value::as_str).unwrap_or_default();
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(name).size(10.0).monospace());
+                    if ui.small_button(lang::view(s.ai_eval_run)).clicked() {
+                        action = Action::RunEvals(Some(id));
+                    }
+                });
+            }
+        });
+
         egui::CollapsingHeader::new(lang::view(s.ai_audit)).default_open(false).show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("ai_audit").max_height(90.0).show(ui, |ui| {
                 for event in &self.harness.audit {
@@ -4035,6 +4073,8 @@ impl WarraqApp {
             Action::PreviewPlan => self.harness.preview_plan(&mut self.session),
             Action::RepairPreview => self.harness.repair_preview(&mut self.session),
             Action::RepairApply => self.harness.repair_apply(&mut self.session),
+            Action::RunEvals(case) => self.harness.run_evals(&mut self.session, case.as_deref()),
+            Action::TaskEvidence => self.harness.task_evidence(&mut self.session),
             Action::MemoryScope(scope) => self.harness.set_memory_scope(&mut self.session, scope),
             Action::MemorySet => self.harness.set_memory(&mut self.session),
             Action::MemoryDelete(key) => self.harness.delete_memory(&mut self.session, &key),

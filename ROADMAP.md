@@ -17,7 +17,7 @@ widget) are tracked there — nothing in M0 depends on them.
 | M4 | History (snapshots/diff/restore), reference-manager integration (Zotero/CSL), arabdoc + template gallery | in progress — snapshots/history and multilingual source-only template gallery landed; reference-manager integration open |
 | M5 | Ship readiness: settings, print/export, untitled/autosave, platform packaging and docs | in progress — Windows/Linux runtime QA done; macOS runtime QA open |
 | M6 | Collaboration, agent integration and release hardening | in progress — Git UX, stale-file safety, agent docs and Windows/Linux QA landed; live presence remains deferred |
-| M7 | Native AI harness and product-ready gate | in progress — M7.1 harness core and M7.2 compile-repair landed; component/evaluation and final platform gate next |
+| M7 | Native AI harness and product-ready gate | in progress — M7.1 harness core, M7.2 compile-repair and M7.3 components/evaluations landed; final platform gate next |
 
 ## Product-ready path
 
@@ -31,12 +31,14 @@ widget) are tracked there — nothing in M0 depends on them.
    `ai.repair.apply` verifies the buffer fingerprint and `before`
    anchors after approval, patches, saves, recompiles and records the
    outcome — through GUI, CLI, control and MCP.
-3. **M7.3 — harness components and evaluation.** Add the
-   Harness²-inspired component tree (prompts, guardrails, memory, tool
-   guidance, skills, task evidence and audit runs) plus deterministic
-   LaTeX repair/evaluation fixtures. Use the external Harness² project as
-   a design reference only; do not add its Python/OpenCode/Codex runtime
-   or its sandbox-bypass model.
+3. **M7.3 — harness components and evaluation — done.** `ai.skill.*`
+   exposes the versioned built-in/project skill registry,
+   `ai.components` the inspectable Harness²-inspired component tree,
+   `ai.task.evidence` per-task bundles, and `ai.eval.*` six
+   deterministic model-free repair fixtures running in isolated
+   workspaces with persisted run records. The external Harness² project
+   remained a design reference only — no Python/OpenCode/Codex runtime
+   and no sandbox-bypass model.
 4. **M7.4 — final ship gate.** Real macOS runtime QA, refreshed Windows
    and Linux release tests, canonical community-template link, final
    docs/release notes, package hashes and clean `ci`/`wasm` gates.
@@ -261,3 +263,24 @@ widget) are tracked there — nothing in M0 depends on them.
     proposed line edits listed under the task; MCP gained
     `ai_repair_preview`/`ai_repair_apply`, keeping the 55-command parity
     across CLI, control and MCP.
+- M7.3 — harness components and evaluation:
+  * `ai.skill.list`/`ai.skill.get` expose the versioned skill registry:
+    four built-in skills plus project `*.md` files under
+    `.warraqcraft/ai/skills/`, bounded like the prompt registry and
+    validated against the task-id charset.
+  * `ai.components` returns the whole inspectable tree — prompts,
+    guardrails, tool guidance, skills, per-scope memory counts, task
+    totals by state, audit size and evaluation coverage — in one call.
+  * `ai.task.evidence` bundles a task's record, task-scope memory and
+    its own audit events.
+  * `ai.eval.list`/`ai.eval.run` run six deterministic, model-free
+    repair fixtures (unclosed/mismatched/stray environments, a clean
+    document, 500-deep hostile input) in isolated temporary workspaces
+    and persist bounded run records under `.warraqcraft/ai/evals/`;
+    `ai.eval.run` is audited and reports the evals directory in
+    `changed_paths`.
+  * The GUI inspector gained localized Skills and Evaluations sections,
+    a per-fixture or all-fixture run button and an Evidence view per
+    task; MCP gained six tools plus the read-only
+    `warraqcraft://ai/components` resource, keeping the 61-command
+    parity across CLI, control and MCP.

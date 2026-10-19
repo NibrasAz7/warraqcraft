@@ -48,16 +48,17 @@ const AI_TASKS_URI: &str = "warraqcraft://ai/tasks";
 const AI_PERMISSIONS_URI: &str = "warraqcraft://ai/permissions";
 const AI_PROMPTS_URI: &str = "warraqcraft://ai/prompts";
 const AI_AUDIT_URI: &str = "warraqcraft://ai/audit";
+const AI_COMPONENTS_URI: &str = "warraqcraft://ai/components";
 
 const INSTRUCTIONS: &str =
     "WarraqCraft edits LaTeX documents. Start an untitled buffer with document_new, open a .tex file with document_open or set the buffer directly \
 with source_set, then run the tools: source_get, structure_get and magic_get inspect the buffer, document_compile typesets \
 it with tectonic or a system TeX engine, math_preview renders a math fragment, text_stats reports document statistics, \
 template_* create documents from the shipped gallery, user_tool_* run configured external tools, \
-project_structure merges the outline across the input/include graph, repo_* inspect and run guarded fixed-argv Git collaboration commands, ai_probe/ai_ask call a configured OpenAI-compatible provider without storing its token, ai_task_*/ai_memory_*/ai_permissions/ai_plan_preview/ai_prompt_*/ai_audit_list expose the durable AI harness, ai_repair_preview/ai_repair_apply run the approval-gated compile-repair workflow, and \
+project_structure merges the outline across the input/include graph, repo_* inspect and run guarded fixed-argv Git collaboration commands, ai_probe/ai_ask call a configured OpenAI-compatible provider without storing its token, ai_task_*/ai_memory_*/ai_permissions/ai_plan_preview/ai_prompt_*/ai_audit_list expose the durable AI harness, ai_repair_preview/ai_repair_apply run the approval-gated compile-repair workflow, ai_skill_*/ai_components/ai_task_evidence expose the inspectable harness component tree, skills and task evidence, ai_eval_*/ai_eval_run list and run deterministic model-free repair evaluations, and \
 project_snapshot/snapshot_* keep local file history. The open document is also readable as resources \
 warraqcraft://doc/source (text/plain), warraqcraft://doc/structure and warraqcraft://doc/stats (application/json), and AI state is readable as \
-warraqcraft://ai/tasks, warraqcraft://ai/permissions, warraqcraft://ai/prompts and warraqcraft://ai/audit — read-only \
+warraqcraft://ai/tasks, warraqcraft://ai/permissions, warraqcraft://ai/prompts, warraqcraft://ai/audit and warraqcraft://ai/components — read-only \
 snapshots of the live buffer and harness.";
 
 /// MCP tool name → engine command id. The two tables stay in sync — a test
@@ -112,6 +113,12 @@ const TOOL_COMMANDS: &[(&str, &str)] = &[
     ("ai_audit_list", "ai.audit.list"),
     ("ai_repair_preview", "ai.repair.preview"),
     ("ai_repair_apply", "ai.repair.apply"),
+    ("ai_skill_list", "ai.skill.list"),
+    ("ai_skill_get", "ai.skill.get"),
+    ("ai_components", "ai.components"),
+    ("ai_task_evidence", "ai.task.evidence"),
+    ("ai_eval_list", "ai.eval.list"),
+    ("ai_eval_run", "ai.eval.run"),
     ("math_preview", "math.preview"),
     ("text_stats", "text.stats"),
     ("project_snapshot", "project.snapshot"),
@@ -276,6 +283,7 @@ impl McpServer {
             json!({ "uri": AI_PERMISSIONS_URI, "name": "AI command permissions", "mimeType": "application/json" }),
             json!({ "uri": AI_PROMPTS_URI, "name": "AI prompts and guardrails", "mimeType": "application/json" }),
             json!({ "uri": AI_AUDIT_URI, "name": "AI audit trail", "mimeType": "application/json" }),
+            json!({ "uri": AI_COMPONENTS_URI, "name": "AI harness component tree", "mimeType": "application/json" }),
         ]);
         resources
     }
@@ -291,6 +299,7 @@ impl McpServer {
             AI_PERMISSIONS_URI => ("ai.permissions", "application/json", true),
             AI_PROMPTS_URI => ("ai.prompt.list", "application/json", true),
             AI_AUDIT_URI => ("ai.audit.list", "application/json", true),
+            AI_COMPONENTS_URI => ("ai.components", "application/json", true),
             _ => return Err((INVALID_PARAMS, format!("unknown resource uri '{uri}'"))),
         };
         let result = self.session.execute(command, &json!({})).map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
@@ -338,6 +347,8 @@ fn resource_templates() -> Value {
           "description": "Versioned AI prompt/guardrail registry entries (as ai_prompt_list)." },
         { "uriTemplate": AI_AUDIT_URI, "name": "AI audit trail", "mimeType": "application/json",
           "description": "Redacted AI/provider/mutation audit events (as ai_audit_list)." },
+        { "uriTemplate": AI_COMPONENTS_URI, "name": "AI harness component tree", "mimeType": "application/json",
+          "description": "Inspectable prompts, guardrails, skills, memory scopes, tasks, audit and evaluations (as ai_components)." },
     ])
 }
 
@@ -826,6 +837,42 @@ fn tool_list() -> Vec<Value> {
             false,
             false,
         ),
+        tool("ai_skill_list", "List versioned built-in and project AI skill registry entries.", json!({}), &[], true, false),
+        tool(
+            "ai_skill_get",
+            "Read one AI skill registry entry by id.",
+            json!({ "id": s("Skill id from ai_skill_list.") }),
+            &["id"],
+            true,
+            false,
+        ),
+        tool(
+            "ai_components",
+            "Read the inspectable AI harness component tree: prompts, guardrails, tool guidance, skills, memory scopes, tasks, audit, and evaluations.",
+            json!({}),
+            &[],
+            true,
+            false,
+        ),
+        tool(
+            "ai_task_evidence",
+            "Read one task's evidence bundle: the task record, matching audit events, and task-scope memory.",
+            json!({ "task_id": s("Task id from ai_task_list.") }),
+            &["task_id"],
+            true,
+            false,
+        ),
+        tool("ai_eval_list", "List deterministic LaTeX-agent evaluation fixtures and recent run summaries.", json!({}), &[], true, false),
+        tool(
+            "ai_eval_run",
+            "Run deterministic, model-free repair evaluations in isolated workspaces and persist a bounded run record.",
+            json!({
+                "case": s("Optional single fixture id from ai_eval_list; otherwise all fixtures run."),
+            }),
+            &[],
+            false,
+            false,
+        ),
         tool(
             "math_preview",
             "Compile a LaTeX math fragment to a preview PDF under .warraqcraft/preview/.",
@@ -1010,16 +1057,16 @@ mod tests {
         let mut s = McpServer::new();
         // No document → the read-only AI resources are still present.
         let r = rpc(&mut s, &json!({"jsonrpc": "2.0", "id": 1, "method": "resources/list"})).unwrap();
-        assert_eq!(r["result"]["resources"].as_array().unwrap().len(), 4);
+        assert_eq!(r["result"]["resources"].as_array().unwrap().len(), 5);
         // Templates list all document and AI URIs.
         let r = rpc(&mut s, &json!({"jsonrpc": "2.0", "id": 2, "method": "resources/templates/list"})).unwrap();
         let templates = r["result"]["resourceTemplates"].as_array().unwrap();
-        assert_eq!(templates.len(), 7);
+        assert_eq!(templates.len(), 8);
         // Set a buffer → the three live document resources join them.
         call(&mut s, 3, "source_set", json!({"text": "\\section{A}\nHello world."}));
         let r = rpc(&mut s, &json!({"jsonrpc": "2.0", "id": 4, "method": "resources/list"})).unwrap();
         let resources = r["result"]["resources"].as_array().unwrap();
-        assert_eq!(resources.len(), 7);
+        assert_eq!(resources.len(), 8);
         assert_eq!(resources[0]["uri"], SOURCE_URI);
         assert_eq!(resources[0]["mimeType"], "text/plain");
         // Read each one.

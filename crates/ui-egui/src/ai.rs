@@ -302,6 +302,9 @@ pub struct HarnessPanel {
     pub plan_result: Option<Value>,
     pub permissions: Vec<Value>,
     pub prompts: Vec<Value>,
+    pub skills: Vec<Value>,
+    pub evals: Vec<Value>,
+    pub eval_result: Option<Value>,
     pub audit: Vec<Value>,
     pub status: String,
     pub needs_refresh: bool,
@@ -324,6 +327,9 @@ impl HarnessPanel {
             plan_result: None,
             permissions: Vec::new(),
             prompts: Vec::new(),
+            skills: Vec::new(),
+            evals: Vec::new(),
+            eval_result: None,
             audit: Vec::new(),
             status: String::new(),
             needs_refresh: true,
@@ -344,6 +350,8 @@ impl HarnessPanel {
         self.tasks = Self::execute(session, "ai.task.list", json!({"limit": 100}))?["tasks"].as_array().cloned().unwrap_or_default();
         self.permissions = Self::execute(session, "ai.permissions", json!({}))?["commands"].as_array().cloned().unwrap_or_default();
         self.prompts = Self::execute(session, "ai.prompt.list", json!({}))?["prompts"].as_array().cloned().unwrap_or_default();
+        self.skills = Self::execute(session, "ai.skill.list", json!({}))?["skills"].as_array().cloned().unwrap_or_default();
+        self.evals = Self::execute(session, "ai.eval.list", json!({}))?["cases"].as_array().cloned().unwrap_or_default();
         self.audit = Self::execute(session, "ai.audit.list", json!({"limit": 50}))?["events"].as_array().cloned().unwrap_or_default();
         self.refresh_memory(session)?;
         if !self.selected_task.is_empty() {
@@ -467,6 +475,35 @@ impl HarnessPanel {
                 self.task_detail = v.get("task").cloned();
                 self.needs_refresh = true;
             }
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// `ai.eval.run` — runs the deterministic, model-free repair
+    /// fixtures in isolated workspaces and persists a run record.
+    /// `case` runs a single fixture; `None` runs all of them.
+    pub fn run_evals(&mut self, session: &mut Session, case: Option<&str>) {
+        let params = match case {
+            Some(id) => json!({"case": id}),
+            None => json!({}),
+        };
+        match Self::execute(session, "ai.eval.run", params) {
+            Ok(v) => {
+                self.eval_result = Some(v);
+                self.needs_refresh = true;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// `ai.task.evidence` — bundle the selected task's record,
+    /// task-scope memory and audit events into the plan-result pane.
+    pub fn task_evidence(&mut self, session: &mut Session) {
+        if self.selected_task.is_empty() {
+            return;
+        }
+        match Self::execute(session, "ai.task.evidence", json!({"task_id": self.selected_task})) {
+            Ok(v) => self.plan_result = Some(v),
             Err(e) => self.status = e,
         }
     }

@@ -115,6 +115,35 @@ mismatches are renamed only when no proper `\end{name}` exists further
 down, and stray `\end` lines are removed. Ambiguous diagnostics
 (unclosed braces, undefined commands) are reported but never patched.
 
+Implemented component and evaluation commands (M7.3):
+
+- `ai.skill.list`, `ai.skill.get` — the versioned skill registry.
+  Built-in skills (`compile_repair`, `diagnostics_triage`, `safe_edits`,
+  `project_context`) carry `SKILLS_VERSION`; project skills are `*.md`
+  files under `.warraqcraft/ai/skills/` whose file stems pass the task-id
+  charset, capped at 128 entries and 64 KiB each. `id`/`name` accepts
+  `skill:<name>` or a bare `<name>`.
+- `ai.components` — one inspectable tree of the whole harness: prompts
+  and guardrails, skills, per-scope memory counts, task totals by state,
+  audit size, and evaluation coverage — instead of many unrelated calls.
+- `ai.task.evidence` — a per-task bundle: the full task record (plan,
+  checkpoints, result, changed paths), its task-scope memory and the
+  audit events attributed to that task id only.
+- `ai.eval.list`, `ai.eval.run` — deterministic, model-free evaluation
+  fixtures. Each case builds a hostile-or-broken document in an isolated
+  temporary workspace (never the open project), runs the real
+  repair-preview → approve → apply flow, and records per-check pass/fail
+  detail. `ai.eval.run` takes an optional `case` id and persists a
+  bounded run record under `.warraqcraft/ai/evals/<timestamp>.json`;
+  `ai.eval.list` returns fixture definitions plus recent run summaries.
+
+The fixtures cover unclosed environments, `\end` mismatches, stray and
+nested-stray closers, an already-correct document (the agent must not
+invent work) and a 500-deep hostile input that must stay bounded and
+never panic. All commands run identically through the GUI inspector,
+`warraqcraft-cli cmd`, the control channel and MCP tools, plus the
+read-only `warraqcraft://ai/components` MCP resource.
+
 ## System prompt contract
 
 The harness system prompt must be versioned and testable. It should state:
@@ -197,4 +226,4 @@ without executing anything.
    tools — shipped in M7.1.
 8. Bounded compile-repair workflow — shipped in M7.2.
 9. Harness component/skills registry and deterministic evaluation
-   fixtures — planned in M7.3.
+   fixtures — shipped in M7.3.

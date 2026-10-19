@@ -29,6 +29,7 @@ use serde_json::{json, Value};
 use texparse::{parse_magic, parse_structure, DocStructure};
 
 pub mod ai;
+pub mod ai_eval;
 pub mod ai_harness;
 pub mod ai_repair;
 pub mod history;
@@ -98,6 +99,12 @@ pub const COMMANDS: &[&str] = &[
     "ai.audit.list",
     "ai.repair.preview",
     "ai.repair.apply",
+    "ai.skill.list",
+    "ai.skill.get",
+    "ai.components",
+    "ai.task.evidence",
+    "ai.eval.list",
+    "ai.eval.run",
     "math.preview",
     "text.stats",
     "project.snapshot",
@@ -561,6 +568,12 @@ impl Session {
             "ai.audit.list" => ai_harness::audit_list(self, params),
             "ai.repair.preview" => ai_repair::preview(self, params),
             "ai.repair.apply" => ai_repair::apply(self, params),
+            "ai.skill.list" => ai_harness::skill_list(self, params),
+            "ai.skill.get" => ai_harness::skill_get(self, params),
+            "ai.components" => ai_harness::components(self, params),
+            "ai.task.evidence" => ai_harness::task_evidence(self, params),
+            "ai.eval.list" => ai_eval::eval_list(self, params),
+            "ai.eval.run" => ai_eval::eval_run(self, params),
             "project.snapshot" => history::snapshot(self, params),
             "snapshot.list" => history::list(self),
             "snapshot.read" => history::read(self, params),
