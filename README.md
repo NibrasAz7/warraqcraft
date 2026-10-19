@@ -61,14 +61,15 @@ research track.
 
 | Platform | State |
 | --- | --- |
-| Windows | Primary development target; local release zip via `scripts/package.ps1` |
+| Windows | Release zip built and smoke-tested locally via `scripts/package.ps1` |
 | Linux | CI target; release tarball and `.deb` via `scripts/package.sh` |
 | macOS | CI target; release `.app` bundle and `.dmg` via `scripts/package.sh` |
 | WASM | Lower parsing/catalog crates are checked with `cargo xtask wasm` |
 
-The repository CI is intended to test Linux, Windows and macOS on every
-push/pull request and produce all three platform artifact sets from the
-release workflow.
+The repository CI tests Linux, Windows and macOS on every push/pull
+request; the release workflow produces all three platform artifact sets.
+Release smoke-test criteria and the current Windows result are recorded in
+[`docs/RELEASE-QA.md`](docs/RELEASE-QA.md).
 
 ## Install and run
 

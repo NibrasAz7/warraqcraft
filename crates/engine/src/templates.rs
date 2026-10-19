@@ -3,10 +3,11 @@
 //!
 //! Discovery mirrors `find_tectonic()`: the `WARRAQCRAFT_TEMPLATES` env
 //! override first (tests, packaging), then `templates/` next to the
-//! executable, then the nearest ancestor directory containing
-//! `templates/` — which covers dev checkouts where the binary lives
-//! under `target/` and templates sit at the workspace root. User imports
-//! live outside the repository under the per-user template dir
+//! executable, standard app/resource install locations, and the nearest
+//! ancestor directory containing `templates/` — which covers dev
+//! checkouts where the binary lives under `target/` and templates sit at
+//! the workspace root. User imports live outside the repository under
+//! the per-user template dir
 //! (`WARRAQCRAFT_USER_TEMPLATES`, `WARRAQCRAFT_CONFIG_DIR/templates`, or
 //! the platform data dir) and shadow a bundled template with the same id.
 //!
@@ -77,6 +78,19 @@ fn user_templates_dir() -> Option<PathBuf> {
         .map(|d| d.join("warraqcraft").join("templates"))
 }
 
+/// Bundled template candidates for portable, app-bundle and system
+/// install layouts. The ancestor search keeps dev checkouts working.
+fn bundled_template_candidates(exe: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(dir) = exe.parent() {
+        out.push(dir.join("templates"));
+        out.push(dir.join("..").join("Resources").join("templates"));
+        out.push(dir.join("..").join("share").join("warraqcraft").join("templates"));
+    }
+    out.extend(exe.ancestors().skip(1).map(|a| a.join("templates")));
+    out
+}
+
 /// Gallery roots, bundled first so imported ids can shadow them. Setting
 /// `WARRAQCRAFT_TEMPLATES` intentionally isolates the gallery (tests and
 /// portable packaging): the per-user dir is not mixed in.
@@ -86,7 +100,7 @@ fn template_dirs() -> Vec<TemplateDir> {
     }
     let mut dirs = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.ancestors().skip(1).map(|a| a.join("templates")).find(|p| p.is_dir()) {
+        if let Some(dir) = bundled_template_candidates(&exe).into_iter().find(|p| p.is_dir()) {
             dirs.push(TemplateDir { path: dir, user: false });
         }
     }
@@ -596,6 +610,14 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn bundled_template_candidates_cover_installed_layouts() {
+        let mac = bundled_template_candidates(Path::new("/Applications/WarraqCraft.app/Contents/MacOS/warraqcraft"));
+        assert!(mac.iter().any(|p| p.ends_with(Path::new("Resources").join("templates"))));
+        let linux = bundled_template_candidates(Path::new("/usr/bin/warraqcraft"));
+        assert!(linux.iter().any(|p| p.ends_with(Path::new("share").join("warraqcraft").join("templates"))));
     }
 
     #[test]

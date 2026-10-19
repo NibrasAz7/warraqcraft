@@ -46,6 +46,7 @@ if [ "$os_name" = "macos" ]; then
     cp target/release/warraqcraft "$app/Contents/MacOS/warraqcraft"
     cp target/release/warraqcraft-cli "$app/Contents/MacOS/warraqcraft-cli"
     cp -R templates "$app/Contents/Resources/templates"
+    cp README.md LICENSE-APACHE LICENSE-MIT NOTICE "$app/Contents/Resources/"
     cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -67,11 +68,23 @@ EOF
 elif [ "$os_name" = "linux" ] && command -v dpkg-deb >/dev/null 2>&1; then
     pkgroot="dist/deb-root"
     rm -rf "$pkgroot"
-    mkdir -p "$pkgroot/DEBIAN" "$pkgroot/usr/bin" "$pkgroot/usr/share/warraqcraft" \
-        "$pkgroot/usr/share/doc/warraqcraft"
+    mkdir -p "$pkgroot/DEBIAN" "$pkgroot/usr/bin" "$pkgroot/usr/share/applications" \
+        "$pkgroot/usr/share/warraqcraft" "$pkgroot/usr/share/doc/warraqcraft"
     cp target/release/warraqcraft target/release/warraqcraft-cli "$pkgroot/usr/bin/"
     cp -R templates "$pkgroot/usr/share/warraqcraft/templates"
     cp README.md LICENSE-APACHE LICENSE-MIT NOTICE "$pkgroot/usr/share/doc/warraqcraft/"
+    cat > "$pkgroot/usr/share/applications/warraqcraft.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=WarraqCraft
+Comment=Local-first LaTeX authoring and typesetting studio
+Exec=warraqcraft %F
+Terminal=false
+Categories=Office;Development;
+MimeType=text/x-tex;
+Keywords=LaTeX;TeX;editor;
+StartupNotify=true
+EOF
     cat > "$pkgroot/DEBIAN/control" <<EOF
 Package: warraqcraft
 Version: $version

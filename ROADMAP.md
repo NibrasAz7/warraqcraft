@@ -186,3 +186,13 @@ widget) are tracked there — nothing in M0 depends on them.
   * The guide pins the safety expectations for dirty/stale buffers,
     explicit destructive parameters, full-buffer `source.set`, bounded
     subprocesses, credential redaction and CI-only headless usage.
+- M6 Wave-4 — release QA and packaging hardening:
+  * Windows x64 release zip rebuilt with bundled Tectonic, inspected,
+    launched through the control channel, exercised through MCP and
+    compiled a real PDF; external-change save protection was verified.
+  * Template discovery now covers portable directories, macOS
+    `Contents/Resources/templates` and Linux
+    `<prefix>/share/warraqcraft/templates`; the `.deb` gains a desktop
+    entry and the `.app` carries licences/docs.
+  * `docs/RELEASE-QA.md` records the artifact checklist, Windows result
+    and remaining real-device macOS/Linux validation steps.
