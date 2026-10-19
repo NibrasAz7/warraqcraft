@@ -116,8 +116,8 @@ widget) are tracked there — nothing in M0 depends on them.
     token never persisted); 🖨 print via craft-print; Stats window.
 - M2 — control surface (headless reachability for all engine commands):
   * `crates/mcp` (new, L6) — opt-in stdio MCP server (NDJSON JSON-RPC,
-    no port): initialize/ping/tools·list/tools·call/resources; 21 tools
-    map 1:1 to Session::execute; read-only warraqcraft://doc/* resources;
+    no port): initialize/ping/tools·list/tools·call/resources; tools map
+    1:1 to Session::execute; read-only warraqcraft://doc/* resources;
     >4 MiB lines capped. `warraqcraft-cli mcp` launches it.
   * `warraqcraft-cli cmd`/`--cmd` — generic engine passthrough
     (--file/--params/--check) + `commands` listing.
@@ -179,3 +179,10 @@ widget) are tracked there — nothing in M0 depends on them.
   * The localized repository window now offers connect-remote guidance,
     branch picker/create, upstream-on-push, changed/conflicted file lists
     and recent commits.
+- M6 Wave-3 — agent integration contract:
+  * `docs/AGENT-INTEGRATIONS.md` documents the fresh-session CLI,
+    live-session control channel and persistent MCP surfaces, including
+    setup recipes for Devin, Claude Code, Cursor and generic MCP clients.
+  * The guide pins the safety expectations for dirty/stale buffers,
+    explicit destructive parameters, full-buffer `source.set`, bounded
+    subprocesses, credential redaction and CI-only headless usage.

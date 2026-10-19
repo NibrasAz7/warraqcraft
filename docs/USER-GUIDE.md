@@ -84,3 +84,5 @@ warraqcraft-cli mcp
 
 MCP and the GUI control channel are opt-in integrations for agents. The
 control channel starts only when the GUI is launched with `--control`.
+Agent host setup and full command recipes are documented in
+[`AGENT-INTEGRATIONS.md`](AGENT-INTEGRATIONS.md).

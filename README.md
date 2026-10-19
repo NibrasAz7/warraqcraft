@@ -54,8 +54,8 @@ research track.
   rendered through run-level bidirectional display and font fallback.
 - **Automation surfaces** — the same engine commands are available from
   the GUI, `warraqcraft-cli`, the opt-in TCP control channel and the
-  opt-in MCP server for agents such as Devin, Claude, Cursor and other
-  tool clients.
+  opt-in MCP server for agents such as Devin, Claude Code, Cursor and
+  other tool clients.
 
 ## Supported platforms
 
@@ -126,6 +126,9 @@ The GUI can also expose an authenticated loopback control channel when
 started explicitly with `--control FILE`; agents then use
 `warraqcraft-cli ui --control FILE ...`. Neither MCP nor TCP control is
 enabled by default.
+
+Client setup, session lifetimes, safety rules and copyable recipes are in
+[`docs/AGENT-INTEGRATIONS.md`](docs/AGENT-INTEGRATIONS.md).
 
 ## Templates
 
