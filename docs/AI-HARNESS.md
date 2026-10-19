@@ -93,6 +93,28 @@ Implemented harness commands:
   guardrail and tool-guidance registry
 - `ai.audit.list` — bounded redacted audit events
 
+Implemented repair commands (M7.2):
+
+- `ai.repair.preview` — gather structural diagnostics (plus a fresh
+  compile when the buffer is clean and saved, unless `compile: false`)
+  and store a bounded `compile_repair` plan on a durable task. The task
+  moves to `waiting_approval`; the buffer is never mutated. When the
+  optional `task_id` names a live task the plan attaches to it,
+  otherwise a new repair task is created.
+- `ai.repair.apply` — after `ai.task.approve` moves the task to
+  `queued`, verify the buffer fingerprint and every `before` anchor
+  recorded at preview time, apply the line edits, save and recompile
+  (unless `recompile: false`), then record the result on the task.
+  Fails closed — task marked `failed` — when the buffer changed since
+  the preview, anchors no longer match, or the file changed on disk.
+
+Repair edits are line-level operations (`insert_before`,
+`replace_line`, `delete_line`), capped and convergent: unclosed
+environments close innermost-first in one insert, `\end{name}`
+mismatches are renamed only when no proper `\end{name}` exists further
+down, and stray `\end` lines are removed. Ambiguous diagnostics
+(unclosed braces, undefined commands) are reported but never patched.
+
 ## System prompt contract
 
 The harness system prompt must be versioned and testable. It should state:
@@ -173,6 +195,6 @@ without executing anything.
    M7.1.
 7. Agent-facing CLI/control/MCP task, memory, permission and audit
    tools — shipped in M7.1.
-8. Bounded compile-repair workflow — planned in M7.2.
+8. Bounded compile-repair workflow — shipped in M7.2.
 9. Harness component/skills registry and deterministic evaluation
    fixtures — planned in M7.3.

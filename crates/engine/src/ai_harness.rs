@@ -38,7 +38,7 @@ const MAX_PROMPT_FILE: u64 = 64 * 1024;
 static TASK_SEQ: AtomicU64 = AtomicU64::new(0);
 
 const TASK_STATES: &[&str] = &["draft", "queued", "running", "waiting_approval", "blocked", "completed", "failed", "cancelled"];
-const TERMINAL_STATES: &[&str] = &["completed", "failed", "cancelled"];
+pub(crate) const TERMINAL_STATES: &[&str] = &["completed", "failed", "cancelled"];
 const MEMORY_SCOPES: &[&str] = &["session", "project", "task", "user"];
 
 /// Built-in system prompt version. Bump with the prompt text.
@@ -83,6 +83,7 @@ pub enum Tier {
 }
 
 /// A command's policy decision.
+#[derive(Clone, Copy)]
 pub struct Permission {
     pub tier: Tier,
     pub approval_required: bool,
@@ -95,7 +96,7 @@ impl Permission {
     }
 }
 
-fn tier_name(tier: Tier) -> &'static str {
+pub(crate) fn tier_name(tier: Tier) -> &'static str {
     match tier {
         Tier::ReadOnly => "read_only",
         Tier::BufferEdit => "buffer_edit",
@@ -138,6 +139,11 @@ pub fn permission(command: &str, params: &Value) -> Option<Permission> {
             Permission::new(Tier::FilesystemWrite, false, "stores the dry-run plan on a durable task")
         }
         "ai.plan.preview" => Permission::new(Tier::ReadOnly, false, "dry-run command classification"),
+        "ai.repair.preview" if params.get("compile").and_then(Value::as_bool) == Some(false) => {
+            Permission::new(Tier::FilesystemWrite, false, "structure-only diagnostics; stores the repair plan on a durable task")
+        }
+        "ai.repair.preview" => Permission::new(Tier::ExternalProcess, true, "compiles to gather diagnostics and stores a repair plan"),
+        "ai.repair.apply" => Permission::new(Tier::ExternalProcess, true, "applies an approved patch, saves and recompiles"),
         "document.new" | "document.open" if params.get("discard").and_then(Value::as_bool) == Some(true) => {
             Permission::new(Tier::Destructive, true, "can discard the dirty buffer")
         }
@@ -211,6 +217,12 @@ fn conditional_policies(command: &str) -> Value {
             "tier": "filesystem_write",
             "approval_required": false,
             "reason": "stores the dry-run plan on a durable task",
+        }]),
+        "ai.repair.preview" => json!([{
+            "when": {"compile": false},
+            "tier": "filesystem_write",
+            "approval_required": false,
+            "reason": "structure-only diagnostics; stores the repair plan on a durable task",
         }]),
         _ => json!([]),
     }
@@ -685,6 +697,8 @@ fn should_audit(command: &str) -> bool {
             | "ai.memory.set"
             | "ai.memory.delete"
             | "ai.memory.import"
+            | "ai.repair.preview"
+            | "ai.repair.apply"
             | "document.new"
             | "document.open"
             | "document.save"
@@ -749,7 +763,7 @@ fn changed_paths(sess: &Session, command: &str, params: &Value, result: &Result<
     let mut paths = Vec::new();
     if let Some(path) = params.get("path").and_then(Value::as_str) {
         paths.push(Value::from(path));
-    } else if matches!(command, "document.save" | "source.set" | "document.compile" | "project.snapshot" | "snapshot.restore") {
+    } else if matches!(command, "document.save" | "source.set" | "document.compile" | "project.snapshot" | "snapshot.restore" | "ai.repair.apply") {
         if let Some(path) = sess.path() {
             paths.push(Value::from(path.display().to_string()));
         }
@@ -760,10 +774,11 @@ fn changed_paths(sess: &Session, command: &str, params: &Value, result: &Result<
         }
     }
 
-    let writes_task = matches!(command, "ai.task.create" | "ai.task.update" | "ai.task.cancel" | "ai.task.approve")
-        || (command == "ai.plan.preview" && params.get("task_id").is_some())
-        || (matches!(command, "ai.memory.set" | "ai.memory.delete" | "ai.memory.import")
-            && params.get("scope").and_then(Value::as_str) == Some("task"));
+    let writes_task =
+        matches!(command, "ai.task.create" | "ai.task.update" | "ai.task.cancel" | "ai.task.approve" | "ai.repair.preview" | "ai.repair.apply")
+            || (command == "ai.plan.preview" && params.get("task_id").is_some())
+            || (matches!(command, "ai.memory.set" | "ai.memory.delete" | "ai.memory.import")
+                && params.get("scope").and_then(Value::as_str) == Some("task"));
     if writes_task {
         if let Some(id) = task_id.as_str().and_then(valid_task_id) {
             paths.push(Value::from(task_path(sess, id).display().to_string()));
@@ -824,7 +839,7 @@ fn value_shape(value: &Value) -> Value {
 }
 
 #[allow(clippy::disallowed_methods)] // Durable task/memory/audit records need real native timestamps.
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -833,7 +848,7 @@ fn new_task_id() -> String {
     format!("t-{}-{}-{seq}", now_ms(), std::process::id())
 }
 
-fn valid_task_id(id: &str) -> Option<&str> {
+pub(crate) fn valid_task_id(id: &str) -> Option<&str> {
     if !id.is_empty() && id.len() <= 128 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         Some(id)
     } else {
@@ -841,7 +856,7 @@ fn valid_task_id(id: &str) -> Option<&str> {
     }
 }
 
-fn required_task_id(params: &Value) -> Result<&str, EngineError> {
+pub(crate) fn required_task_id(params: &Value) -> Result<&str, EngineError> {
     let id = params.get("task_id").or_else(|| params.get("id")).and_then(Value::as_str).ok_or(EngineError::BadParam("task_id"))?;
     valid_task_id(id).ok_or(EngineError::BadParam("task_id"))
 }
@@ -939,19 +954,19 @@ fn read_json(path: &Path) -> Result<Value, EngineError> {
     serde_json::from_str(&text).map_err(|e| EngineError::Tool(format!("invalid AI task JSON: {e}")))
 }
 
-fn write_task(sess: &Session, task: &Value) -> Result<(), EngineError> {
+pub(crate) fn write_task(sess: &Session, task: &Value) -> Result<(), EngineError> {
     let dir = task_dir(sess);
     fs::create_dir_all(&dir)?;
     let id = task.get("id").and_then(Value::as_str).and_then(valid_task_id).ok_or(EngineError::Tool("task missing id".into()))?;
     Ok(craft_atomic::atomic_write(&task_path(sess, id), task.to_string().as_bytes())?)
 }
 
-fn touch_and_write_task(sess: &Session, task: &mut Value) -> Result<(), EngineError> {
+pub(crate) fn touch_and_write_task(sess: &Session, task: &mut Value) -> Result<(), EngineError> {
     task["updated_ms"] = json!(now_ms());
     write_task(sess, task)
 }
 
-fn load_task(sess: &Session, id: &str) -> Result<Value, EngineError> {
+pub(crate) fn load_task(sess: &Session, id: &str) -> Result<Value, EngineError> {
     let path = task_path(sess, id);
     read_json(&path).map_err(|e| match e {
         EngineError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => EngineError::Tool("task not found".into()),
@@ -973,7 +988,7 @@ fn task_summary(task: &Value) -> Value {
     })
 }
 
-fn checkpoint(task: &mut Value, label: &str, detail: Option<&str>) {
+pub(crate) fn checkpoint(task: &mut Value, label: &str, detail: Option<&str>) {
     let list = task.get("checkpoints").and_then(Value::as_array).cloned().unwrap_or_default();
     let mut list = list;
     list.push(json!({

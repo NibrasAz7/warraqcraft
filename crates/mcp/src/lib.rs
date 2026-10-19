@@ -54,7 +54,7 @@ const INSTRUCTIONS: &str =
 with source_set, then run the tools: source_get, structure_get and magic_get inspect the buffer, document_compile typesets \
 it with tectonic or a system TeX engine, math_preview renders a math fragment, text_stats reports document statistics, \
 template_* create documents from the shipped gallery, user_tool_* run configured external tools, \
-project_structure merges the outline across the input/include graph, repo_* inspect and run guarded fixed-argv Git collaboration commands, ai_probe/ai_ask call a configured OpenAI-compatible provider without storing its token, ai_task_*/ai_memory_*/ai_permissions/ai_plan_preview/ai_prompt_*/ai_audit_list expose the durable AI harness, and \
+project_structure merges the outline across the input/include graph, repo_* inspect and run guarded fixed-argv Git collaboration commands, ai_probe/ai_ask call a configured OpenAI-compatible provider without storing its token, ai_task_*/ai_memory_*/ai_permissions/ai_plan_preview/ai_prompt_*/ai_audit_list expose the durable AI harness, ai_repair_preview/ai_repair_apply run the approval-gated compile-repair workflow, and \
 project_snapshot/snapshot_* keep local file history. The open document is also readable as resources \
 warraqcraft://doc/source (text/plain), warraqcraft://doc/structure and warraqcraft://doc/stats (application/json), and AI state is readable as \
 warraqcraft://ai/tasks, warraqcraft://ai/permissions, warraqcraft://ai/prompts and warraqcraft://ai/audit — read-only \
@@ -110,6 +110,8 @@ const TOOL_COMMANDS: &[(&str, &str)] = &[
     ("ai_prompt_list", "ai.prompt.list"),
     ("ai_prompt_get", "ai.prompt.get"),
     ("ai_audit_list", "ai.audit.list"),
+    ("ai_repair_preview", "ai.repair.preview"),
+    ("ai_repair_apply", "ai.repair.apply"),
     ("math_preview", "math.preview"),
     ("text_stats", "text.stats"),
     ("project_snapshot", "project.snapshot"),
@@ -800,6 +802,28 @@ fn tool_list() -> Vec<Value> {
             }),
             &[],
             true,
+            false,
+        ),
+        tool(
+            "ai_repair_preview",
+            "Gather compile diagnostics and store a bounded, minimal line-edit repair plan on a durable AI task. Never mutates the buffer.",
+            json!({
+                "task_id": s("Optional existing task; otherwise a new repair task is created."),
+                "compile": { "type": "boolean", "description": "Run a fresh compile for diagnostics when the buffer is clean and saved (default true)." },
+            }),
+            &[],
+            false,
+            false,
+        ),
+        tool(
+            "ai_repair_apply",
+            "Apply a repair task's approved compile_repair plan, save, and recompile. Fails closed when the buffer changed since the preview.",
+            json!({
+                "task_id": s("Task id whose compile_repair plan was approved via ai_task_approve."),
+                "recompile": { "type": "boolean", "description": "Save and recompile after applying (default true)." },
+            }),
+            &["task_id"],
+            false,
             false,
         ),
         tool(

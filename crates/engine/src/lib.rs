@@ -30,6 +30,7 @@ use texparse::{parse_magic, parse_structure, DocStructure};
 
 pub mod ai;
 pub mod ai_harness;
+pub mod ai_repair;
 pub mod history;
 pub mod preview;
 pub mod project;
@@ -95,6 +96,8 @@ pub const COMMANDS: &[&str] = &[
     "ai.prompt.list",
     "ai.prompt.get",
     "ai.audit.list",
+    "ai.repair.preview",
+    "ai.repair.apply",
     "math.preview",
     "text.stats",
     "project.snapshot",
@@ -556,6 +559,8 @@ impl Session {
             "ai.prompt.list" => ai_harness::prompt_list(self, params),
             "ai.prompt.get" => ai_harness::prompt_get(self, params),
             "ai.audit.list" => ai_harness::audit_list(self, params),
+            "ai.repair.preview" => ai_repair::preview(self, params),
+            "ai.repair.apply" => ai_repair::apply(self, params),
             "project.snapshot" => history::snapshot(self, params),
             "snapshot.list" => history::list(self),
             "snapshot.read" => history::read(self, params),

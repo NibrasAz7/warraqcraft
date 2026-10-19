@@ -17,7 +17,7 @@ widget) are tracked there — nothing in M0 depends on them.
 | M4 | History (snapshots/diff/restore), reference-manager integration (Zotero/CSL), arabdoc + template gallery | in progress — snapshots/history and multilingual source-only template gallery landed; reference-manager integration open |
 | M5 | Ship readiness: settings, print/export, untitled/autosave, platform packaging and docs | in progress — Windows/Linux runtime QA done; macOS runtime QA open |
 | M6 | Collaboration, agent integration and release hardening | in progress — Git UX, stale-file safety, agent docs and Windows/Linux QA landed; live presence remains deferred |
-| M7 | Native AI harness and product-ready gate | in progress — M7.1 harness core landed; compile-repair workflow second, component/evaluation and final platform gate next |
+| M7 | Native AI harness and product-ready gate | in progress — M7.1 harness core and M7.2 compile-repair landed; component/evaluation and final platform gate next |
 
 ## Product-ready path
 
@@ -25,9 +25,12 @@ widget) are tracked there — nothing in M0 depends on them.
    tasks, inspectable memory, versioned prompts/guardrails, the
    `ai.permissions` command matrix, approval/dry-run flow, redacted audit
    log, and GUI/CLI/control/MCP parity landed.
-2. **M7.2 — bounded compile-repair agent.** The first end-to-end agent
-   task gathers diagnostics and project context, previews a minimal
-   patch, asks approval, applies it, recompiles and records the outcome.
+2. **M7.2 — bounded compile-repair agent — done.** `ai.repair.preview`
+   gathers structure/compile diagnostics and stores a minimal
+   line-level `compile_repair` plan on a durable task;
+   `ai.repair.apply` verifies the buffer fingerprint and `before`
+   anchors after approval, patches, saves, recompiles and records the
+   outcome — through GUI, CLI, control and MCP.
 3. **M7.3 — harness components and evaluation.** Add the
    Harness²-inspired component tree (prompts, guardrails, memory, tool
    guidance, skills, task evidence and audit runs) plus deterministic
@@ -241,3 +244,20 @@ widget) are tracked there — nothing in M0 depends on them.
     exposed as 53 MCP tools plus read-only AI resources.
   * Git status and `stage: true` exclude `.warraqcraft`/`.texcraft`
     internal state so harness bookkeeping is not mistaken for source work.
+- M7.2 — bounded compile-repair agent:
+  * `engine::ai_repair` adds `ai.repair.preview`/`ai.repair.apply`: the
+    first builds a minimal line-edit patch from structural diagnostics
+    (optional fresh compile when the buffer is clean and saved) and
+    parks it as a `compile_repair` plan on a durable task; the second
+    runs only after `ai.task.approve`, re-verifies a buffer fingerprint
+    plus every `before` anchor, applies, saves and recompiles, then
+    records before/after error counts on the task.
+  * Repair logic is convergent: unclosed environments close
+    innermost-first in one insert, `\end` mismatches are renamed only
+    when no proper `\end{name}` follows, and stray `\end` lines are
+    removed; ambiguous diagnostics are surfaced but never patched.
+  * The GUI AI inspector gained a localized "Repair diagnostics" entry
+    point plus an "Apply repair" step on the approved task, with the
+    proposed line edits listed under the task; MCP gained
+    `ai_repair_preview`/`ai_repair_apply`, keeping the 55-command parity
+    across CLI, control and MCP.

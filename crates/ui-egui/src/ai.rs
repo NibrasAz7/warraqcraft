@@ -433,6 +433,44 @@ impl HarnessPanel {
         }
     }
 
+    /// `ai.repair.preview` — diagnose the buffer and store a bounded
+    /// repair plan on a durable task (new task unless one is selected).
+    pub fn repair_preview(&mut self, session: &mut Session) {
+        let mut params = json!({"compile": true});
+        if !self.selected_task.is_empty() {
+            params["task_id"] = Value::from(self.selected_task.clone());
+        }
+        match Self::execute(session, "ai.repair.preview", params) {
+            Ok(v) => {
+                if let Some(id) = v.get("task_id").and_then(Value::as_str) {
+                    self.selected_task = id.to_string();
+                }
+                self.plan_result = Some(v.clone());
+                self.task_detail = v.get("task").cloned().or(self.task_detail.take());
+                if v.get("repairable").and_then(Value::as_bool) != Some(true) {
+                    self.status = "no repairable diagnostics".into();
+                }
+                self.needs_refresh = true;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// `ai.repair.apply` — runs only after the stored repair plan has
+    /// been approved via `ai.task.approve`.
+    pub fn repair_apply(&mut self, session: &mut Session) {
+        if self.selected_task.is_empty() {
+            return;
+        }
+        match Self::execute(session, "ai.repair.apply", json!({"task_id": self.selected_task, "recompile": true})) {
+            Ok(v) => {
+                self.task_detail = v.get("task").cloned();
+                self.needs_refresh = true;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
     pub fn set_memory_scope(&mut self, session: &mut Session, scope: &str) {
         self.memory_scope = scope.to_string();
         if let Err(e) = self.refresh_memory(session) {

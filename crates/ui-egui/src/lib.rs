@@ -3848,6 +3848,8 @@ impl WarraqApp {
             ApproveTask(bool),
             CancelTask,
             PreviewPlan,
+            RepairPreview,
+            RepairApply,
             MemoryScope(&'static str),
             MemorySet,
             MemoryDelete(String),
@@ -3863,6 +3865,9 @@ impl WarraqApp {
                 }
                 if ui.button(lang::view(s.repo_refresh)).clicked() {
                     action = Action::Refresh;
+                }
+                if ui.button(lang::view(s.ai_repair)).clicked() {
+                    action = Action::RepairPreview;
                 }
             });
             egui::ScrollArea::vertical().id_salt("ai_task_prompt").max_height(54.0).show(ui, |ui| {
@@ -3899,10 +3904,22 @@ impl WarraqApp {
                             action = Action::ApproveTask(false);
                         }
                     }
+                    let repair_queued = state == "queued" && task.pointer("/plan/kind").and_then(Value::as_str) == Some("compile_repair");
+                    if repair_queued && ui.button(lang::view(s.ai_repair_apply)).clicked() {
+                        action = Action::RepairApply;
+                    }
                     if !matches!(state.as_str(), "completed" | "failed" | "cancelled") && ui.button(lang::view(s.ai_task_cancel)).clicked() {
                         action = Action::CancelTask;
                     }
                 });
+                if task.pointer("/plan/kind").and_then(Value::as_str) == Some("compile_repair") {
+                    for edit in task.pointer("/plan/edits").and_then(Value::as_array).cloned().unwrap_or_default().iter().take(12) {
+                        let op = edit.get("op").and_then(Value::as_str).unwrap_or_default();
+                        let line = edit.get("line").and_then(Value::as_u64).unwrap_or(0);
+                        let after = edit.get("after").and_then(Value::as_str).unwrap_or("—");
+                        ui.label(egui::RichText::new(format!("{op} L{line}: {after}")).size(10.0).monospace());
+                    }
+                }
             }
         });
 
@@ -4016,6 +4033,8 @@ impl WarraqApp {
             Action::ApproveTask(approve) => self.harness.approve_task(&mut self.session, approve),
             Action::CancelTask => self.harness.cancel_task(&mut self.session),
             Action::PreviewPlan => self.harness.preview_plan(&mut self.session),
+            Action::RepairPreview => self.harness.repair_preview(&mut self.session),
+            Action::RepairApply => self.harness.repair_apply(&mut self.session),
             Action::MemoryScope(scope) => self.harness.set_memory_scope(&mut self.session, scope),
             Action::MemorySet => self.harness.set_memory(&mut self.session),
             Action::MemoryDelete(key) => self.harness.delete_memory(&mut self.session, &key),
