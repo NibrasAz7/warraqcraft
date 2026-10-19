@@ -50,7 +50,7 @@ const INSTRUCTIONS: &str =
 with source_set, then run the tools: source_get, structure_get and magic_get inspect the buffer, document_compile typesets \
 it with tectonic or a system TeX engine, math_preview renders a math fragment, text_stats reports document statistics, \
 template_* create documents from the shipped gallery, user_tool_* run configured external tools, \
-project_structure merges the outline across the input/include graph, ai_probe/ai_ask call a configured OpenAI-compatible provider without storing its token, and \
+project_structure merges the outline across the input/include graph, repo_* inspect and run guarded fixed-argv Git collaboration commands, ai_probe/ai_ask call a configured OpenAI-compatible provider without storing its token, and \
 project_snapshot/snapshot_* keep local file history. The open document is also readable as resources \
 warraqcraft://doc/source (text/plain), warraqcraft://doc/structure and warraqcraft://doc/stats (application/json) — read-only \
 snapshots of the live buffer.";
@@ -61,6 +61,7 @@ const TOOL_COMMANDS: &[(&str, &str)] = &[
     ("document_new", "document.new"),
     ("document_open", "document.open"),
     ("document_save", "document.save"),
+    ("document_disk_state", "document.disk_state"),
     ("document_compile", "document.compile"),
     ("source_set", "source.set"),
     ("source_get", "source.get"),
@@ -76,6 +77,14 @@ const TOOL_COMMANDS: &[(&str, &str)] = &[
     ("template_import", "template.import"),
     ("project_graph", "project.graph"),
     ("project_structure", "project.structure"),
+    ("repo_status", "repo.status"),
+    ("repo_init", "repo.init"),
+    ("repo_pull", "repo.pull"),
+    ("repo_push", "repo.push"),
+    ("repo_commit", "repo.commit"),
+    ("repo_branches", "repo.branches"),
+    ("repo_conflicts", "repo.conflicts"),
+    ("repo_history", "repo.history"),
     ("ai_providers", "ai.providers"),
     ("ai_probe", "ai.probe"),
     ("ai_ask", "ai.ask"),
@@ -313,27 +322,44 @@ fn tool_list() -> Vec<Value> {
     vec![
         tool(
             "document_new",
-            "Replace the session with an untitled, unsaved buffer. Optional text gives it starter content.",
-            json!({ "text": s("Optional starter source for the new untitled buffer.") }),
+            "Replace the session with an untitled, unsaved buffer. Refused while the buffer is dirty unless discard=true is supplied.",
+            json!({
+                "text": s("Optional starter source for the new untitled buffer."),
+                "discard": { "type": "boolean", "description": "Explicitly discard the current dirty buffer." },
+            }),
             &[],
             false,
             false,
         ),
         tool(
             "document_open",
-            "Open a .tex file into the session (replaces the current buffer — save first with document_save if needed).",
-            json!({ "path": s("Path of the .tex file to open.") }),
+            "Open a .tex file into the session. Refused while the buffer is dirty unless discard=true is supplied.",
+            json!({
+                "path": s("Path of the .tex file to open."),
+                "discard": { "type": "boolean", "description": "Explicitly discard the current dirty buffer." },
+            }),
             &["path"],
             false,
             false,
         ),
         tool(
             "document_save",
-            "Write the buffer to its file, or to the given path (overwrites the file on disk).",
-            json!({ "path": s("Optional new path to save to.") }),
+            "Write the buffer to its file, or to the given path. If the file changed on disk, save is refused unless overwrite=true is supplied after explicit confirmation.",
+            json!({
+                "path": s("Optional new path to save to."),
+                "overwrite": { "type": "boolean", "description": "Explicit confirmation that the current buffer may overwrite newer disk contents." },
+            }),
             &[],
             false,
             true,
+        ),
+        tool(
+            "document_disk_state",
+            "Report whether the open file changed or disappeared on disk since it was loaded or last saved.",
+            json!({}),
+            &[],
+            true,
+            false,
         ),
         tool(
             "document_compile",
@@ -437,6 +463,90 @@ fn tool_list() -> Vec<Value> {
             "project_structure",
             "Return the merged outline, labels and cite keys across every .tex file reachable from the open document (or its % !TeX root master).",
             json!({}),
+            &[],
+            true,
+            false,
+        ),
+        tool(
+            "repo_status",
+            "Inspect the project's Git repository: branch, upstream, ahead/behind, changed paths, conflicts, and buffer staleness.",
+            json!({
+                "remote": s("Remote name to inspect (default origin)."),
+                "timeout_s": { "type": "integer", "description": "Timeout in seconds, clamped 1-300." },
+            }),
+            &[],
+            true,
+            false,
+        ),
+        tool(
+            "repo_init",
+            "Initialize Git in the project directory; optionally records a remote URL. Writes .git metadata but never stores credentials.",
+            json!({
+                "remote": s("Optional remote URL to add after git init."),
+                "remote_name": s("Remote name for the optional URL (default origin)."),
+                "timeout_s": { "type": "integer", "description": "Timeout in seconds, clamped 1-300." },
+            }),
+            &[],
+            false,
+            true,
+        ),
+        tool(
+            "repo_pull",
+            "Run git pull --ff-only against the project repository. Network operation; refused while the buffer or file has unsaved/stale state.",
+            json!({
+                "remote": s("Optional remote name."),
+                "branch": s("Optional branch name; requires remote."),
+                "timeout_s": { "type": "integer", "description": "Timeout in seconds, clamped 1-300 (default 120)." },
+            }),
+            &[],
+            false,
+            true,
+        ),
+        tool(
+            "repo_push",
+            "Run git push for the project repository. Network operation; refused while the buffer or file has unsaved/stale state.",
+            json!({
+                "remote": s("Optional remote name."),
+                "branch": s("Optional branch name; requires remote."),
+                "set_upstream": { "type": "boolean", "description": "Run git push -u with remote and branch." },
+                "timeout_s": { "type": "integer", "description": "Timeout in seconds, clamped 1-300 (default 120)." },
+            }),
+            &[],
+            false,
+            true,
+        ),
+        tool(
+            "repo_commit",
+            "Create a Git commit with a user-authored message; stage=true runs git add -A first. Refused while the buffer or file has unsaved/stale state.",
+            json!({
+                "message": s("Commit message (required, ≤4096 bytes)."),
+                "stage": { "type": "boolean", "description": "Stage all worktree changes before committing." },
+                "timeout_s": { "type": "integer", "description": "Timeout in seconds, clamped 1-300." },
+            }),
+            &["message"],
+            false,
+            true,
+        ),
+        tool(
+            "repo_branches",
+            "List branches, or create/switch a branch. Branch changes are refused while the buffer or file has unsaved/stale state.",
+            json!({
+                "create": s("Optional new branch name to create and switch to."),
+                "switch": s("Optional existing branch name to switch to."),
+                "timeout_s": { "type": "integer", "description": "Timeout in seconds, clamped 1-300." },
+            }),
+            &[],
+            false,
+            true,
+        ),
+        tool("repo_conflicts", "List unmerged/conflicted paths in the project repository.", json!({}), &[], true, false),
+        tool(
+            "repo_history",
+            "List recent Git commits for the project repository (read-only).",
+            json!({
+                "limit": s("Maximum commits, clamped 1-100 (default 20)."),
+                "timeout_s": { "type": "integer", "description": "Timeout in seconds, clamped 1-300." },
+            }),
             &[],
             true,
             false,
@@ -568,7 +678,7 @@ mod tests {
         let mut s = McpServer::new();
         let r = rpc(&mut s, &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})).unwrap();
         let tools = r["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 27);
+        assert_eq!(tools.len(), 36);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         for (name, _) in TOOL_COMMANDS {
             assert!(names.contains(name), "tools/list missing {name}");

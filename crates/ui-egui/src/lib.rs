@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use egui::text::{CCursor, CCursorRange};
 use texparse::DocStructure;
-use warraqcraft_engine::{CompileReport, Session};
+use warraqcraft_engine::{CompileReport, EngineError, Session};
 
 const DEFAULT_DOC: &str = "\\documentclass{article}\n\\usepackage{amsmath}\n\n\\title{Untitled}\n\\author{}\n\n\\begin{document}\n\\maketitle\n\n\\section{Introduction}\n\n\\end{document}\n";
 
@@ -361,6 +361,28 @@ struct ProjFile {
 #[cfg(not(target_arch = "wasm32"))]
 type ToolJob = Result<serde_json::Value, String>;
 
+/// Git status for the collaboration chip/window, decoded from
+/// `repo.status` rather than duplicating command parsing in the UI.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default, Clone)]
+struct RepoStatus {
+    git: bool,
+    in_repo: bool,
+    branch: String,
+    upstream: String,
+    remote_url: String,
+    ahead: u64,
+    behind: u64,
+    changed: u64,
+    conflicts: u64,
+    clean: bool,
+}
+
+/// `(command, result)` — status refreshes and mutating repo actions share
+/// one worker channel so Git never blocks a frame.
+#[cfg(not(target_arch = "wasm32"))]
+type RepoJob = (String, Result<serde_json::Value, String>);
+
 /// The studio application state.
 pub struct WarraqApp {
     session: Session,
@@ -508,11 +530,34 @@ pub struct WarraqApp {
     /// blocks on the spooler).
     #[cfg(not(target_arch = "wasm32"))]
     print_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    /// Git-native collaboration state and worker channel.
+    #[cfg(not(target_arch = "wasm32"))]
+    repo_status: Option<RepoStatus>,
+    #[cfg(not(target_arch = "wasm32"))]
+    repo_rx: Option<std::sync::mpsc::Receiver<RepoJob>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    repo_checked_at: f64,
+    #[cfg(not(target_arch = "wasm32"))]
+    repo_open: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    repo_commit_msg: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    repo_stage_all: bool,
+    /// Open file changed/deleted on disk after its loaded stamp. The
+    /// modal opens on the first transition; the chip remains until
+    /// reload/overwrite clears the state.
+    external_changed: bool,
+    external_modal: bool,
+    external_checked_at: f64,
     /// Opt-in `--control FILE` TCP channel, polled in `logic`.
     #[cfg(not(target_arch = "wasm32"))]
     control: Option<control::Control>,
 }
 const AUTOCOMPILE_IDLE_SECS: f64 = 5.0;
+#[cfg(not(target_arch = "wasm32"))]
+const REPO_SCAN_SECS: f64 = 10.0;
+#[cfg(not(target_arch = "wasm32"))]
+const EXTERNAL_SCAN_SECS: f64 = 1.0;
 
 impl WarraqApp {
     /// Create the app; `file` (optional) is opened at startup.
@@ -606,6 +651,21 @@ impl WarraqApp {
             mathprev: mathprev::MathPreview::new(),
             #[cfg(not(target_arch = "wasm32"))]
             print_rx: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            repo_status: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            repo_rx: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            repo_checked_at: f64::NEG_INFINITY,
+            #[cfg(not(target_arch = "wasm32"))]
+            repo_open: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            repo_commit_msg: String::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            repo_stage_all: true,
+            external_changed: false,
+            external_modal: false,
+            external_checked_at: f64::NEG_INFINITY,
             #[cfg(not(target_arch = "wasm32"))]
             control: None,
         };
@@ -747,13 +807,161 @@ impl WarraqApp {
         }
     }
 
+    /// Run a Git command on a worker. The scratch session carries the
+    /// same path/source so read-only status also reports the live dirty
+    /// flag; mutating commands are pre-guarded by the UI before spawning.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_repo_command(&mut self, command: &str, params: serde_json::Value) {
+        if self.repo_rx.is_some() {
+            self.status = self.s().repo_busy.into();
+            return;
+        }
+        let branch_mutation = command == "repo.branches" && (params.get("create").is_some() || params.get("switch").is_some());
+        let mutating = matches!(command, "repo.pull" | "repo.push" | "repo.commit") || branch_mutation;
+        if mutating && self.session.dirty() {
+            self.status = self.s().status_disk_dirty.into();
+            return;
+        }
+        if mutating && self.session.disk_changed().unwrap_or(false) {
+            self.external_changed = true;
+            self.external_modal = true;
+            return;
+        }
+        let path = self.session.path().map(Path::to_path_buf);
+        let source = self.session.source().to_string();
+        let command = command.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.repo_rx = Some(rx);
+        std::thread::spawn(move || {
+            let mut session = Session::new();
+            if let Some(path) = path {
+                let _ = session.open(&path);
+                session.set_source(source);
+            }
+            let result = session.execute(&command, &params).map_err(|e| e.to_string());
+            let _ = tx.send((command, result));
+        });
+    }
+
+    /// Refresh repository status at a slow cadence; git subprocesses are
+    /// useful for a chip but too expensive to run every frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn refresh_repo(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        if self.repo_rx.is_none() && now - self.repo_checked_at >= REPO_SCAN_SECS {
+            self.repo_checked_at = now;
+            self.start_repo_command("repo.status", serde_json::json!({}));
+        } else if self.repo_rx.is_none() {
+            ctx.request_repaint_after_secs((REPO_SCAN_SECS - (now - self.repo_checked_at).max(0.0)) as f32);
+        }
+    }
+
+    /// Drain the Git worker. Mutating actions get a visible status; a
+    /// quiet status refresh only updates the chip/modal data.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_repo(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.repo_rx else { return };
+        match rx.try_recv() {
+            Ok((command, Ok(v))) => {
+                self.repo_rx = None;
+                if command == "repo.status" {
+                    self.repo_status = Some(repo_status_from_json(&v));
+                } else {
+                    self.status = lang::fmt(self.s().status_repo_done, &[("cmd", &command)]);
+                    self.repo_checked_at = f64::NEG_INFINITY;
+                    self.external_checked_at = f64::NEG_INFINITY;
+                    ctx.request_repaint();
+                }
+            }
+            Ok((command, Err(e))) => {
+                self.repo_rx = None;
+                if command == "repo.status" {
+                    self.repo_status = None;
+                }
+                self.status = lang::fmt(self.s().status_failed, &[("context", &command), ("error", &e)]);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.repo_rx = None;
+                self.status = self.s().status_tool_dead.into();
+            }
+        }
+    }
+
+    /// Cheap mtime/length check for edits made outside the app. The
+    /// indicator persists after the modal is dismissed; reload or an
+    /// explicitly confirmed overwrite clears it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn check_external_file(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        if now - self.external_checked_at < EXTERNAL_SCAN_SECS {
+            ctx.request_repaint_after_secs((EXTERNAL_SCAN_SECS - (now - self.external_checked_at).max(0.0)) as f32);
+            return;
+        }
+        self.external_checked_at = now;
+        ctx.request_repaint_after_secs(EXTERNAL_SCAN_SECS as f32);
+        match self.session.disk_changed() {
+            Ok(true) => {
+                if !self.external_changed {
+                    self.external_modal = true;
+                }
+                self.external_changed = true;
+            }
+            Ok(false) => {
+                self.external_changed = false;
+                self.external_modal = false;
+            }
+            Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", self.s().open_file), ("error", &e.to_string())]),
+        }
+    }
+
+    /// Reload the file the user explicitly chose to take from disk. This
+    /// is the one path that may discard local edits, and only after the
+    /// conflict modal's explicit Reload button.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn reload_current(&mut self) {
+        let Some(path) = self.session.path().map(Path::to_path_buf) else { return };
+        match self.session.open(&path) {
+            Ok(()) => {
+                self.external_changed = false;
+                self.external_modal = false;
+                self.folded.clear();
+                self.mirrors = None;
+                self.prev_src.clear();
+                self.src_stamp = self.src_stamp.wrapping_add(1);
+                self.rebuild_marks();
+                self.reparse();
+                self.goto = Some(offset_of_line_col(self.session.source(), self.cursor_lc.0, self.cursor_lc.1));
+                self.status = self.s().status_reloaded.into();
+            }
+            Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", self.s().reload), ("error", &e.to_string())]),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn overwrite_current(&mut self) {
+        match self.session.save_overwrite() {
+            Ok(()) => {
+                self.external_changed = false;
+                self.external_modal = false;
+                self.status = lang::fmt(self.s().status_saved, &[("path", &self.path_display())]);
+            }
+            Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", self.s().save), ("error", &e.to_string())]),
+        }
+    }
+
     fn open_path(&mut self, path: PathBuf) {
         // Switching files never loses work: a dirty buffer with a path is
         // auto-saved first; an untitled dirty buffer refuses to switch.
         if self.session.dirty() && self.session.path() != Some(path.as_path()) {
             if self.session.path().is_some() {
                 if let Err(e) = self.session.save() {
-                    self.status = lang::fmt(self.s().status_failed, &[("context", self.s().save), ("error", &e.to_string())]);
+                    if matches!(e, EngineError::ExternalChange) {
+                        self.external_changed = true;
+                        self.external_modal = true;
+                    } else {
+                        self.status = lang::fmt(self.s().status_failed, &[("context", self.s().save), ("error", &e.to_string())]);
+                    }
                     return;
                 }
             } else {
@@ -777,6 +985,14 @@ impl WarraqApp {
                 self.rebuild_marks(); // report is gone — clear the dots
                 self.reparse();
                 self.proj_scanned_at = f64::NEG_INFINITY;
+                self.external_changed = false;
+                self.external_modal = false;
+                self.external_checked_at = f64::NEG_INFINITY;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.repo_status = None;
+                    self.repo_checked_at = f64::NEG_INFINITY;
+                }
                 self.load_tools();
             }
             Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", &path.display().to_string()), ("error", &e.to_string())]),
@@ -789,7 +1005,12 @@ impl WarraqApp {
         if self.session.dirty() {
             if self.session.path().is_some() {
                 if let Err(e) = self.session.save() {
-                    self.status = lang::fmt(self.s().status_failed, &[("context", self.s().save), ("error", &e.to_string())]);
+                    if matches!(e, EngineError::ExternalChange) {
+                        self.external_changed = true;
+                        self.external_modal = true;
+                    } else {
+                        self.status = lang::fmt(self.s().status_failed, &[("context", self.s().save), ("error", &e.to_string())]);
+                    }
                     return;
                 }
             } else {
@@ -812,6 +1033,14 @@ impl WarraqApp {
                 self.rebuild_marks();
                 self.reparse();
                 self.proj_scanned_at = f64::NEG_INFINITY;
+                self.external_changed = false;
+                self.external_modal = false;
+                self.external_checked_at = f64::NEG_INFINITY;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.repo_status = None;
+                    self.repo_checked_at = f64::NEG_INFINITY;
+                }
                 self.load_tools();
                 self.status = self.s().status_untitled.into();
             }
@@ -874,7 +1103,15 @@ impl WarraqApp {
             return;
         }
         match self.session.save() {
-            Ok(()) => self.status = lang::fmt(self.s().status_saved, &[("path", &self.path_display())]),
+            Ok(()) => {
+                self.external_changed = false;
+                self.external_modal = false;
+                self.status = lang::fmt(self.s().status_saved, &[("path", &self.path_display())]);
+            }
+            Err(EngineError::ExternalChange) => {
+                self.external_changed = true;
+                self.external_modal = true;
+            }
             Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", self.s().save), ("error", &e.to_string())]),
         }
     }
@@ -917,7 +1154,16 @@ impl WarraqApp {
     fn save_as(&mut self) {
         if let Some(p) = rfd::FileDialog::new().add_filter("LaTeX", &["tex"]).save_file() {
             match self.session.save_as(&p) {
-                Ok(()) => self.status = lang::fmt(self.s().status_saved, &[("path", &p.display().to_string())]),
+                Ok(()) => {
+                    self.external_changed = false;
+                    self.external_modal = false;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        self.repo_status = None;
+                        self.repo_checked_at = f64::NEG_INFINITY;
+                    }
+                    self.status = lang::fmt(self.s().status_saved, &[("path", &p.display().to_string())]);
+                }
                 Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", self.s().save), ("error", &e.to_string())]),
             }
         }
@@ -1206,7 +1452,12 @@ impl WarraqApp {
             return;
         };
         if let Err(e) = self.session.save() {
-            self.status = lang::fmt(self.s().status_save_before_compile, &[("error", &e.to_string())]);
+            if matches!(e, EngineError::ExternalChange) {
+                self.external_changed = true;
+                self.external_modal = true;
+            } else {
+                self.status = lang::fmt(self.s().status_save_before_compile, &[("error", &e.to_string())]);
+            }
             return;
         }
         self.compiling = true;
@@ -1674,6 +1925,27 @@ impl WarraqApp {
                     }
                 }
                 ui.label(egui::RichText::new(lang::view(chip)).small().color(chip_col));
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(repo) = self.repo_status.as_ref().filter(|r| r.in_repo) {
+                    let branch = if repo.branch.is_empty() { s.repo.to_string() } else { repo.branch.clone() };
+                    if ui
+                        .selectable_label(self.repo_open, egui::RichText::new(lang::view(&branch)).small().color(theme::pal().muted))
+                        .on_hover_text(lang::view(s.repo_hint).into_owned())
+                        .clicked()
+                    {
+                        self.repo_open = !self.repo_open;
+                        self.repo_checked_at = f64::NEG_INFINITY;
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.external_changed
+                    && ui
+                        .selectable_label(false, egui::RichText::new(lang::view(s.external_title)).small().color(theme::pal().warn))
+                        .on_hover_text(lang::view(if self.session.dirty() { s.external_dirty } else { s.external_clean }).into_owned())
+                        .clicked()
+                {
+                    self.external_modal = true;
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Engine pick rides on Recompile's chevron.
@@ -1739,6 +2011,11 @@ impl WarraqApp {
                             self.load_snaps();
                             self.hist_confirm = None;
                         }
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if icon_button(ui, 14.0, icons::branch, &lang::view(s.repo), true).on_hover_text(lang::view(s.repo_hint).into_owned()).clicked() {
+                        self.repo_open = !self.repo_open;
+                        self.repo_checked_at = f64::NEG_INFINITY;
                     }
                     if ui.selectable_label(self.stats_open, lang::view(s.stats)).on_hover_text(lang::view(s.stats_hint).into_owned()).clicked() {
                         self.stats_open = !self.stats_open;
@@ -3494,6 +3771,153 @@ impl WarraqApp {
         }
     }
 
+    /// Git status/actions window. Commands run through the same engine
+    /// command surface as CLI/control/MCP; the window itself only guards
+    /// the local dirty/conflict edge cases that cannot be inferred by
+    /// the scratch worker session.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn repo_modal(&mut self, ctx: &egui::Context) {
+        if !self.repo_open {
+            return;
+        }
+        let mut open = self.repo_open;
+        let status = self.repo_status.clone();
+        let mut action: Option<(&'static str, serde_json::Value)> = None;
+        let mut commit_msg = String::new();
+        egui::Window::new(lang::view(self.s().repo_title))
+            .collapsible(false)
+            .resizable(false)
+            .default_width(410.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                let s = self.s();
+                let Some(status) = status else {
+                    ui.label(egui::RichText::new(lang::view(s.repo_no_git)).size(11.0).color(theme::pal().muted));
+                    return;
+                };
+                if !status.git {
+                    ui.label(egui::RichText::new(lang::view(s.repo_no_git)).size(11.0).color(theme::pal().muted));
+                    return;
+                }
+                if !status.in_repo {
+                    ui.label(egui::RichText::new(lang::view(s.repo_no_repo)).size(11.0).color(theme::pal().muted));
+                    if ui.button(lang::view(s.repo_init)).clicked() {
+                        action = Some(("repo.init", serde_json::json!({})));
+                    }
+                    return;
+                }
+                ui.label(egui::RichText::new(lang::fmt(s.repo_branch, &[("name", &status.branch)])).size(11.0));
+                if !status.upstream.is_empty() {
+                    ui.label(egui::RichText::new(lang::fmt(s.repo_upstream, &[("name", &status.upstream)])).size(11.0));
+                }
+                if !status.remote_url.is_empty() {
+                    ui.label(egui::RichText::new(lang::fmt(s.repo_remote, &[("url", &status.remote_url)])).size(10.5).monospace());
+                }
+                ui.label(egui::RichText::new(lang::fmt(s.repo_changes, &[("n", &status.changed.to_string())])).size(11.0));
+                if status.conflicts > 0 {
+                    ui.label(
+                        egui::RichText::new(lang::fmt(s.repo_conflicts, &[("n", &status.conflicts.to_string())]))
+                            .size(11.0)
+                            .color(theme::pal().error),
+                    );
+                }
+                if status.ahead > 0 {
+                    ui.label(egui::RichText::new(lang::fmt(s.repo_ahead, &[("n", &status.ahead.to_string())])).size(11.0));
+                }
+                if status.behind > 0 {
+                    ui.label(egui::RichText::new(lang::fmt(s.repo_behind, &[("n", &status.behind.to_string())])).size(11.0).color(theme::pal().warn));
+                }
+                if status.clean {
+                    ui.label(egui::RichText::new(lang::view(s.repo_clean)).size(10.5).color(theme::pal().accent_dim));
+                }
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(lang::view(s.repo_refresh)).clicked() {
+                        action = Some(("repo.status", serde_json::json!({})));
+                    }
+                    if ui.add_enabled(status.conflicts == 0, egui::Button::new(lang::view(s.repo_pull))).clicked() {
+                        action = Some(("repo.pull", serde_json::json!({})));
+                    }
+                    if ui.add_enabled(status.conflicts == 0, egui::Button::new(lang::view(s.repo_push))).clicked() {
+                        action = Some(("repo.push", serde_json::json!({})));
+                    }
+                });
+                ui.add_space(4.0);
+                ui.checkbox(&mut self.repo_stage_all, lang::view(s.repo_stage_all));
+                let commit_edit =
+                    ui.add(egui::TextEdit::singleline(&mut self.repo_commit_msg).hint_text(lang::view(s.repo_commit_hint)).desired_width(330.0));
+                if (ui
+                    .add_enabled(status.conflicts == 0 && !self.repo_commit_msg.trim().is_empty(), egui::Button::new(lang::view(s.repo_commit)))
+                    .clicked()
+                    || (commit_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.repo_commit_msg.trim().is_empty()))
+                    && status.conflicts == 0
+                {
+                    commit_msg = self.repo_commit_msg.trim().to_string();
+                    action = Some(("repo.commit", serde_json::json!({"message": commit_msg, "stage": self.repo_stage_all})));
+                }
+            });
+        self.repo_open = open;
+        if let Some((command, params)) = action {
+            if command != "repo.status" {
+                self.repo_open = false;
+            }
+            self.start_repo_command(command, params);
+        }
+        if !commit_msg.is_empty() {
+            self.repo_commit_msg.clear();
+        }
+    }
+
+    /// Conflict choice for a file changed on disk. The user may take the
+    /// disk copy, write the current buffer over it, or keep editing with
+    /// the warning chip still visible — never an automatic overwrite.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn external_modal(&mut self, ctx: &egui::Context) {
+        if !self.external_modal {
+            return;
+        }
+        enum Pick {
+            None,
+            Reload,
+            Overwrite,
+            Keep,
+        }
+        let mut pick = Pick::None;
+        let mut open = self.external_modal;
+        egui::Window::new(lang::view(self.s().external_title))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                let s = self.s();
+                let body = if self.session.dirty() { s.external_dirty } else { s.external_clean };
+                ui.label(egui::RichText::new(lang::view(body)).size(11.0));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(lang::view(s.reload)).clicked() {
+                        pick = Pick::Reload;
+                    }
+                    if ui.add_enabled(self.session.dirty() || self.external_changed, egui::Button::new(lang::view(s.overwrite))).clicked() {
+                        pick = Pick::Overwrite;
+                    }
+                    if ui.button(lang::view(s.keep_editing)).clicked() {
+                        pick = Pick::Keep;
+                    }
+                });
+            });
+        self.external_modal = open;
+        match pick {
+            Pick::Reload => self.reload_current(),
+            Pick::Overwrite => self.overwrite_current(),
+            Pick::Keep | Pick::None => {}
+        }
+        if matches!(pick, Pick::Keep) {
+            self.external_modal = false;
+        }
+    }
+
     /// Floating math preview: when the caret sits inside a math span,
     /// tint the span, compile the fragment on a worker, and paint the
     /// result in an egui::Area anchored bottom-right of the editor.
@@ -3556,6 +3980,26 @@ impl WarraqApp {
                         }
                     });
             });
+    }
+}
+
+/// Decode the bounded `repo.status` payload into the UI's display shape.
+/// Missing fields default to the safest value (not a repo / no counts).
+#[cfg(not(target_arch = "wasm32"))]
+fn repo_status_from_json(v: &serde_json::Value) -> RepoStatus {
+    let n = |key: &str| v.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let s = |key: &str| v.get(key).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    RepoStatus {
+        git: v.get("git").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        in_repo: v.get("in_repo").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        branch: s("branch"),
+        upstream: s("upstream"),
+        remote_url: s("remote_url"),
+        ahead: n("ahead"),
+        behind: n("behind"),
+        changed: n("changed"),
+        conflicts: v.get("conflicts").and_then(serde_json::Value::as_array).map_or(0, |a| a.len() as u64),
+        clean: v.get("clean").and_then(serde_json::Value::as_bool).unwrap_or(false),
     }
 }
 
@@ -4075,6 +4519,26 @@ mod tests {
         assert!(!WarraqApp::template_card_matches(&card, "rtl", None, Some("fa")));
         assert!(!WarraqApp::template_card_matches(&card, "missing", None, None));
     }
+
+    /// The status chip consumes the engine JSON shape, not raw Git text.
+    #[test]
+    fn repo_status_decoder_uses_engine_fields() {
+        let st = repo_status_from_json(&serde_json::json!({
+            "git": true,
+            "in_repo": true,
+            "branch": "main",
+            "upstream": "origin/main",
+            "remote_url": "https://***@example/repo.git",
+            "ahead": 2,
+            "behind": 1,
+            "changed": 3,
+            "conflicts": ["a.tex"],
+            "clean": false
+        }));
+        assert_eq!((st.branch.as_str(), st.ahead, st.behind, st.changed, st.conflicts), ("main", 2, 1, 3, 1));
+        assert!(!st.clean);
+        assert!(!repo_status_from_json(&serde_json::json!({})).in_repo);
+    }
 }
 
 impl eframe::App for WarraqApp {
@@ -4093,6 +4557,9 @@ impl eframe::App for WarraqApp {
             self.poll_compile(ctx);
             self.poll_tool(ctx);
             self.poll_print();
+            self.refresh_repo(ctx);
+            self.poll_repo(ctx);
+            self.check_external_file(ctx);
             self.tick_autocompile(ctx);
             // Write prefs when the debounce has passed — wasm's store is
             // memory-only and Instant isn't readable there anyway.
@@ -4167,6 +4634,8 @@ impl eframe::App for WarraqApp {
             self.tpl_modal(&ctx);
             self.hist_modal(&ctx);
             self.ai_modal(&ctx);
+            self.repo_modal(&ctx);
+            self.external_modal(&ctx);
         }
         if let Some(key) = self.cite.show(&ctx, theme::pal(), self.s()) {
             let now = ctx.input(|i| i.time);

@@ -129,9 +129,9 @@ Adapt names to the app's model, but preserve the contract:
 
 | Command | Required behavior |
 | --- | --- |
-| `document.new` | create untitled dirty buffer/document; no disk write until save |
-| `document.open` | load file, validate/bound hostile input |
-| `document.save` | atomic write; optional `path` is save-as |
+| `document.new` | create untitled dirty buffer/document; refuse to replace a dirty buffer unless `discard: true` |
+| `document.open` | load file, validate/bound hostile input; refuse to replace a dirty buffer unless `discard: true` |
+| `document.save` | atomic write; optional `path` is save-as; `overwrite: true` is the explicit external-change confirmation |
 | `document.compile` / `document.render` | produce the app's output artifact |
 | `source.set` / `source.get` | text-source apps only |
 | `structure.get` | live outline/objects/layers/pages summary |

@@ -34,7 +34,11 @@ research track.
   arrow symbol palette, line operations and occurrence mirrors.
 - **Documents and recovery** — new documents start as untitled unsaved
   buffers; dirty state is protected; the latest text, path and cursor are
-  autosaved to preferences and offered on restart.
+  autosaved to preferences and offered on restart. External disk changes
+  surface an explicit reload/overwrite choice instead of silent data loss.
+- **Git collaboration** — repository detection, branch/status display,
+  initialize/pull/push/commit actions, conflict counts and guarded branch
+  commands; credentials stay with the user's Git tooling.
 - **Bibliography and references** — project-wide `\label`/`\ref`
   completion, `.bib` parsing, inline `\cite` key completion, a searchable
   cite dialog and bibliography backend detection.
@@ -143,10 +147,11 @@ three paths separate:
 
 1. **File-based collaboration now** — users can place a project in Git,
    a synced folder or any existing version-control workflow.
-2. **Git-aware project integration** — detect remotes, surface branch /
-   dirty state, support pull/rebase/push commands and preserve atomic
-   saves. This is the recommended first online-work step because it adds
-   no service account.
+2. **Git-aware project integration** — implemented through `repo.status`,
+   `repo.init`, `repo.pull`, `repo.push`, `repo.commit`, `repo.branches`,
+   `repo.conflicts` and `repo.history`. Operations are explicit, guarded
+   against dirty/stale buffers, and preserve atomic saves; credentials
+   remain with Git rather than WarraqCraft preferences.
 3. **Optional Overleaf-like session sync** — a later opt-in service or
    self-hosted relay could coordinate live sessions and shared cursors.
    It must never become required for editing or compiling.

@@ -22,6 +22,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 
 use serde_json::{json, Value};
 use texparse::{parse_magic, parse_structure, DocStructure};
@@ -30,6 +31,7 @@ pub mod ai;
 pub mod history;
 pub mod preview;
 pub mod project;
+pub mod repo;
 pub mod stats;
 pub mod synctex;
 pub mod templates;
@@ -73,6 +75,14 @@ pub enum EngineError {
     BadParam(&'static str),
     /// User-tool lookup failure — the session stays usable.
     Tool(String),
+    /// The buffer is dirty where a repository operation needs a clean
+    /// working file.
+    DirtyBuffer,
+    /// The file changed on disk after the buffer was opened or last
+    /// saved — overwrite needs an explicit confirmation.
+    ExternalChange,
+    /// A git command failed or returned an actionable error.
+    Git(String),
 }
 
 impl std::fmt::Display for EngineError {
@@ -84,6 +94,9 @@ impl std::fmt::Display for EngineError {
             Self::UnknownCommand(c) => write!(f, "unknown command '{c}'"),
             Self::BadParam(p) => write!(f, "missing or invalid parameter '{p}'"),
             Self::Tool(m) => write!(f, "user tool: {m}"),
+            Self::DirtyBuffer => write!(f, "buffer has unsaved changes — save before changing the repository"),
+            Self::ExternalChange => write!(f, "file changed on disk — reload it or save with overwrite confirmation"),
+            Self::Git(m) => write!(f, "git: {m}"),
         }
     }
 }
@@ -146,12 +159,28 @@ impl CompileReport {
     }
 }
 
+/// Metadata captured when the buffer was loaded/saved. Comparing it with
+/// the current file is cheap and catches ordinary external edits and
+/// deletes before WarraqCraft overwrites them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some(FileStamp { len: meta.len(), modified: meta.modified().ok() })
+}
+
 /// An open WarraqCraft document session.
 #[derive(Default)]
 pub struct Session {
     path: Option<PathBuf>,
     src: String,
     dirty: bool,
+    /// Stamp captured by `open`/`save`; `None` for untitled buffers.
+    disk_stamp: Option<FileStamp>,
     user_tools: Vec<UserTool>,
 }
 
@@ -163,7 +192,7 @@ impl Session {
 
     /// Session prefilled with `src`, not dirty (e.g. an editor template).
     pub fn with_source(src: String) -> Self {
-        Self { path: None, src, dirty: false, user_tools: Vec::new() }
+        Self { path: None, src, dirty: false, disk_stamp: None, user_tools: Vec::new() }
     }
 
     /// Path of the open file, if any.
@@ -203,22 +232,57 @@ impl Session {
         let bytes = std::fs::read(path)?;
         self.src = String::from_utf8_lossy(&bytes).into_owned();
         self.path = Some(path.to_path_buf());
+        self.disk_stamp = file_stamp(path);
         self.dirty = false;
         Ok(())
     }
 
-    /// Write the buffer back to its file.
+    /// Whether the open file disappeared or changed after WarraqCraft
+    /// loaded/saved it. Untitled buffers cannot conflict with disk state.
+    pub fn disk_changed(&self) -> Result<bool, EngineError> {
+        let Some(path) = &self.path else { return Ok(false) };
+        match std::fs::metadata(path) {
+            Ok(meta) => Ok(self.disk_stamp != Some(FileStamp { len: meta.len(), modified: meta.modified().ok() })),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(self.disk_stamp.is_some()),
+            Err(e) => Err(EngineError::Io(e)),
+        }
+    }
+
+    /// Write the buffer back to its file, refusing to overwrite a file
+    /// that changed on disk since this buffer was loaded/saved.
     pub fn save(&mut self) -> Result<(), EngineError> {
+        self.save_inner(false)
+    }
+
+    /// Save even when [`disk_changed`](Self::disk_changed) is true. UI and
+    /// agent callers must only use this after explicit user confirmation.
+    pub fn save_overwrite(&mut self) -> Result<(), EngineError> {
+        self.save_inner(true)
+    }
+
+    fn save_inner(&mut self, overwrite: bool) -> Result<(), EngineError> {
+        if !overwrite && self.disk_changed()? {
+            return Err(EngineError::ExternalChange);
+        }
         let Some(path) = self.path.clone() else { return Err(EngineError::NoFile) };
         craft_atomic::atomic_write(&path, self.src.as_bytes())?;
+        self.disk_stamp = file_stamp(&path);
         self.dirty = false;
         Ok(())
     }
 
-    /// Write the buffer to a new file and make it the session path.
+    /// Write the buffer to a new file and make it the session path. A
+    /// new target is a user-selected overwrite; saving the same target
+    /// still honours the external-change guard.
     pub fn save_as(&mut self, path: &Path) -> Result<(), EngineError> {
+        if self.path.as_deref() == Some(path) {
+            return self.save();
+        }
+        craft_atomic::atomic_write(path, self.src.as_bytes())?;
         self.path = Some(path.to_path_buf());
-        self.save()
+        self.disk_stamp = file_stamp(path);
+        self.dirty = false;
+        Ok(())
     }
 
     /// Live structural scan of the buffer.
@@ -240,27 +304,48 @@ impl Session {
         match cmd {
             "document.new" => {
                 // Optional starter text; the buffer is dirty and has no path
-                // until document.save gives it one.
+                // until document.save gives it one. `discard: true` is the
+                // caller's explicit acknowledgement that a dirty buffer may
+                // be replaced.
+                if self.dirty && !params.get("discard").and_then(Value::as_bool).unwrap_or(false) {
+                    return Err(EngineError::DirtyBuffer);
+                }
                 let text = params.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
                 self.path = None;
                 self.src = text;
                 self.dirty = true;
+                self.disk_stamp = None;
                 self.user_tools.clear();
                 Ok(json!({"ok": true, "path": Value::Null}))
             }
             "document.open" => {
                 let path = params.get("path").and_then(Value::as_str).ok_or(EngineError::BadParam("path"))?;
+                if self.dirty && !params.get("discard").and_then(Value::as_bool).unwrap_or(false) {
+                    return Err(EngineError::DirtyBuffer);
+                }
                 self.open(Path::new(path))?;
                 Ok(json!({"ok": true, "path": self.path_string()}))
             }
             "document.save" => {
+                let overwrite = params.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
                 if let Some(path) = params.get("path").and_then(Value::as_str) {
-                    self.save_as(Path::new(path))?;
+                    if self.path.as_deref() == Some(Path::new(path)) && overwrite {
+                        self.save_overwrite()?;
+                    } else {
+                        self.save_as(Path::new(path))?;
+                    }
+                } else if overwrite {
+                    self.save_overwrite()?;
                 } else {
                     self.save()?;
                 }
                 Ok(json!({"ok": true, "path": self.path_string()}))
             }
+            "document.disk_state" => Ok(json!({
+                "path": self.path_string(),
+                "dirty": self.dirty,
+                "external_changed": self.disk_changed()?,
+            })),
             "document.compile" => Ok(self.compile()?.to_json()),
             "source.set" => {
                 let text = params.get("text").and_then(Value::as_str).ok_or(EngineError::BadParam("text"))?;
@@ -321,6 +406,16 @@ impl Session {
             // Merged outline + labels across the reachable \input graph —
             // the open file is parsed from the live buffer (M3).
             "project.structure" => project::run(self),
+            // Git-native collaboration: explicit, fixed-argv operations
+            // against the project repository; credentials stay with Git.
+            "repo.status" => repo::status(self, params),
+            "repo.init" => repo::init(self, params),
+            "repo.pull" => repo::pull(self, params),
+            "repo.push" => repo::push(self, params),
+            "repo.commit" => repo::commit(self, params),
+            "repo.branches" => repo::branches(self, params),
+            "repo.conflicts" => repo::conflicts(self),
+            "repo.history" => repo::history(self, params),
             // Inline math preview: fragment → scratch `.tex` → PDF
             // under `.warraqcraft/preview/` for the UI to rasterize.
             "math.preview" => preview::run(self, params),
@@ -792,6 +887,73 @@ mod tests {
     }
 
     #[test]
+    fn dirty_buffer_blocks_open_and_new_until_discard_is_explicit() {
+        let mut s = Session::new();
+        s.execute("document.new", &json!({"text": "unsaved\n"})).unwrap();
+        assert!(matches!(s.execute("document.new", &json!({})), Err(EngineError::DirtyBuffer)));
+        assert!(matches!(s.execute("document.open", &json!({"path": "other.tex"})), Err(EngineError::DirtyBuffer)));
+        assert_eq!(s.source(), "unsaved\n");
+        s.execute("document.new", &json!({"text": "replacement\n", "discard": true})).unwrap();
+        assert_eq!(s.source(), "replacement\n");
+    }
+
+    static NEXT_DIR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let n = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("warraqcraft-engine-test-{}-{tag}-{n}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn external_disk_change_blocks_save_until_confirmed() {
+        let dir = TempDir::new("external");
+        let path = dir.0.join("main.tex");
+        std::fs::write(&path, "one\n").unwrap();
+        let mut s = Session::new();
+        s.execute("document.open", &json!({"path": path})).unwrap();
+        std::fs::write(&path, "one changed externally\n").unwrap();
+
+        let state = s.execute("document.disk_state", &json!({})).unwrap();
+        assert_eq!(state["external_changed"], true);
+        assert!(matches!(s.execute("document.save", &json!({})), Err(EngineError::ExternalChange)));
+        s.execute("document.save", &json!({"overwrite": true})).unwrap();
+        let state = s.execute("document.disk_state", &json!({})).unwrap();
+        assert_eq!(state["external_changed"], false);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\n");
+    }
+
+    #[test]
+    fn repo_status_and_dirty_guard_when_git_is_available() {
+        if Command::new("git").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+            return;
+        }
+        let dir = TempDir::new("repo");
+        let path = dir.0.join("main.tex");
+        std::fs::write(&path, "doc\n").unwrap();
+        let mut s = Session::new();
+        s.execute("document.open", &json!({"path": path})).unwrap();
+        s.execute("repo.init", &json!({})).unwrap();
+
+        let st = s.execute("repo.status", &json!({})).unwrap();
+        assert_eq!(st["git"], true);
+        assert_eq!(st["in_repo"], true);
+        assert_eq!(st["untracked"], 1);
+        s.execute("source.set", &json!({"text": "dirty\n"})).unwrap();
+        assert!(matches!(s.execute("repo.pull", &json!({})), Err(EngineError::DirtyBuffer)));
+    }
+
+    #[test]
     fn execute_source_and_structure() {
         let mut s = Session::new();
         s.execute("source.set", &json!({"text": "\\documentclass{article}\n\\begin{document}\n\\section{Hi}\n\\end{document}\n"})).unwrap();
@@ -823,6 +985,7 @@ mod tests {
             "document.new",
             "document.open",
             "document.save",
+            "document.disk_state",
             "document.compile",
             "source.set",
             "source.get",
@@ -840,6 +1003,14 @@ mod tests {
             "text.stats",
             "project.graph",
             "project.structure",
+            "repo.status",
+            "repo.init",
+            "repo.pull",
+            "repo.push",
+            "repo.commit",
+            "repo.branches",
+            "repo.conflicts",
+            "repo.history",
             "project.snapshot",
             "snapshot.list",
             "snapshot.read",

@@ -36,6 +36,28 @@ engine commands around the standard workflow rather than a new service.
 - Remote URLs and credentials are managed by the user's Git tooling;
   WarraqCraft does not store credentials in preferences.
 
+### Implemented first slice
+
+The desktop UI shows a localized Git button plus the current branch when a
+repository is detected. The Git window exposes refresh, initialize, fast-
+forward pull, push and commit actions on a worker thread; remote URLs are
+redacted before display. Pull, push, commit and branch changes refuse to
+run while the editor buffer is dirty or while the open file is stale.
+
+External modification is tracked with a file stamp captured on open/save
+and exposed through `document.disk_state`. Normal saves return an external-
+change error instead of overwriting newer disk contents. The UI shows a
+localized conflict window with three explicit choices: reload the disk
+copy, save over the disk copy, or keep editing with the warning visible.
+The same choice is available to headless callers through
+`document.save` with `overwrite: true`; `document.new` and `document.open`
+also require `discard: true` before replacing a dirty buffer.
+
+All repository commands are fixed-argument `git` subprocesses — no shell —
+with bounded output, timeouts and branch/remote name validation. Remote
+credentials remain in the user's Git configuration and are redacted in
+WarraqCraft responses.
+
 ### Strengths
 
 - No account, relay or new trust boundary.

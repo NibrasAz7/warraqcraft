@@ -219,6 +219,23 @@ pub fn question(p: &Painter, r: Rect, col: Color32) {
     p.circle_filled(pos2(c.x, c.y + s * 0.28), s * 0.07, col);
 }
 
+/// Branch glyph (Git collaboration): trunk plus a diverging branch.
+pub fn branch(p: &Painter, r: Rect, col: Color32) {
+    let s = r.width().min(r.height());
+    let stroke = st(1.25, col);
+    let x = r.center().x;
+    let y0 = r.top() + s * 0.18;
+    let y1 = r.bottom() - s * 0.18;
+    p.line_segment([pos2(x, y0), pos2(x, y1)], stroke);
+    let bx = x + s * 0.24;
+    let by = y0 + s * 0.18;
+    p.line_segment([pos2(x, y0 + s * 0.3), pos2(bx, by)], stroke);
+    p.line_segment([pos2(bx, by), pos2(bx, y0 + s * 0.58)], stroke);
+    for c in [pos2(x, y0), pos2(bx, by), pos2(x, y1)] {
+        p.circle_filled(c, s * 0.075, col);
+    }
+}
+
 /// Small filled dot (unsaved-changes marker).
 pub fn dot(p: &Painter, r: Rect, col: Color32) {
     p.circle_filled(r.center(), r.width().min(r.height()) * 0.22, col);

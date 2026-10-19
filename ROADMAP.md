@@ -158,3 +158,14 @@ widget) are tracked there — nothing in M0 depends on them.
     crate/layer layout, Session command contract, CLI/TCP/MCP parity,
     prefs/recovery, i18n, templates/history, AI and packaging gates —
     for PhotoCraft, VectorCraft, PDFCraft and future siblings.
+- M6 Wave-1 — Git-native collaboration + disk safety:
+  * `engine::repo` adds bounded fixed-argv `repo.status/init/pull/push/
+    commit/branches/conflicts/history`; dirty buffers and stale disk
+    state guard mutating operations, and credentials are redacted.
+  * `document.disk_state` plus open/save stamps detect external edits;
+    `document.save` refuses silent overwrite, `overwrite: true` is the
+    explicit confirmation, and `document.new/open` require
+    `discard: true` before replacing a dirty buffer.
+  * UI adds a localized Git status/window and changed-on-disk modal with
+    reload / save-over / keep-editing choices across the 16-language
+    catalog; the same commands are exposed through CLI/control/MCP.
