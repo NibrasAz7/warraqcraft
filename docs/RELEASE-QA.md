@@ -54,6 +54,11 @@ tools).
   SHA-256: `220201edce45615f9d157aadf850ba971bd857f3c1f69c16b0f7844616eadca6`
 - Package inspection found both executables, bundled `bin/tectonic.exe`,
   all 64 shipped templates, README, licences and NOTICE.
+- `dist/warraqcraft-0.1.0-windows-x64-setup.exe` — per-user NSIS
+  installer — was built locally, silent-installed (`/S`), verified to
+  compile a document via the installed `bin\tectonic.exe` (a real
+  one-page PDF), and uninstalled leaving no files, registry entries or
+  Start Menu items behind.
 - The packaged CLI listed 61 engine commands, returned all 64 templates
   and produced project structure; MCP `initialize`/`tools/list` returned
   61 tools.

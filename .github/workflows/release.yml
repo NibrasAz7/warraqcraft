@@ -59,6 +59,19 @@ jobs:
         if: runner.os != 'Windows'
         run: INCLUDE_TECTONIC=1 ./scripts/package.sh "$WARRAQCRAFT_VERSION"
 
+      - name: Build NSIS installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nsis --version=3.10 -y --no-progress
+          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+          if (-not $makensis) { $makensis = "C:\Program Files (x86)\NSIS\Bin\makensis.exe" }
+          if (-not (Test-Path $makensis)) { $makensis = "C:\Program Files (x86)\NSIS\makensis.exe" }
+          $stage = (Get-ChildItem "dist\warraqcraft-*-windows-x64" -Directory | Select-Object -First 1).FullName
+          $ver = $stage -replace '^.*warraqcraft-(.+)-windows-x64$', '$1'
+          $out = Join-Path (Resolve-Path dist) "warraqcraft-$ver-windows-x64-setup.exe"
+          & $makensis /DVERSION=$ver "/DSRCDIR=$stage" "/DOUTFILE=$out" scripts\installer.nsi
+
       - name: Smoke packaged CLI (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -115,6 +128,7 @@ jobs:
           name: warraqcraft-${{ runner.os }}
           path: |
             dist/*.zip
+            dist/*.exe
             dist/*.tar.gz
             dist/*.dmg
             dist/*.deb

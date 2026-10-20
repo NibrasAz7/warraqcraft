@@ -3099,18 +3099,21 @@ impl WarraqApp {
         let title = lang::view(if entry.is_dir { s.new_folder_title } else { s.new_file_title });
         let mut create = false;
         let mut cancel = false;
-        egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
-            ui.label(lang::fmt(s.in_dir, &[("dir", &entry.dir.display().to_string())]));
-            ui.add(
-                egui::TextEdit::singleline(&mut entry.name)
-                    .hint_text(if entry.is_dir { s.folder_name_hint } else { s.file_name_hint })
-                    .desired_width(220.0),
-            );
-            ui.horizontal(|ui| {
-                create = ui.button(lang::view(s.create)).clicked();
-                cancel = ui.button(lang::view(s.cancel)).clicked();
-            });
-        });
+        egui::Window::new(title).collapsible(false).resizable(true).default_pos(ctx.content_rect().center()).pivot(egui::Align2::CENTER_CENTER).show(
+            ctx,
+            |ui| {
+                ui.label(lang::fmt(s.in_dir, &[("dir", &entry.dir.display().to_string())]));
+                ui.add(
+                    egui::TextEdit::singleline(&mut entry.name)
+                        .hint_text(if entry.is_dir { s.folder_name_hint } else { s.file_name_hint })
+                        .desired_width(220.0),
+                );
+                ui.horizontal(|ui| {
+                    create = ui.button(lang::view(s.create)).clicked();
+                    cancel = ui.button(lang::view(s.cancel)).clicked();
+                });
+            },
+        );
         let entry = self.new_entry.take().unwrap_or_else(|| NewEntry { dir: PathBuf::new(), name: String::new(), is_dir: false });
         if cancel || entry.name.trim().is_empty() && create {
             return;
@@ -3274,7 +3277,8 @@ impl WarraqApp {
             .resizable(true)
             .default_size([880.0, 560.0])
             .min_size([760.0, 480.0])
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_pos(ctx.content_rect().center())
+            .pivot(egui::Align2::CENTER_CENTER)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.tpl_filter).hint_text(lang::view(s.tpl_search_hint)).desired_width(230.0));
@@ -3469,8 +3473,9 @@ impl WarraqApp {
         let mut close = false;
         egui::Window::new(lang::view(self.s().hist_title))
             .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .resizable(true)
+            .default_pos(ctx.content_rect().center())
+            .pivot(egui::Align2::CENTER_CENTER)
             .show(ctx, |ui| {
                 let s = self.s();
                 ui.horizontal(|ui| {
@@ -3549,8 +3554,9 @@ impl WarraqApp {
         let st = self.s();
         egui::Window::new(lang::view(st.stats_title))
             .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .resizable(true)
+            .default_pos(ctx.content_rect().center())
+            .pivot(egui::Align2::CENTER_CENTER)
             .open(&mut self.stats_open)
             .show(ctx, |ui| {
                 egui::Grid::new("stats_grid").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
@@ -3585,8 +3591,9 @@ impl WarraqApp {
         let mut open = self.settings_open;
         egui::Window::new(lang::view(s.settings_title))
             .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .resizable(true)
+            .default_pos(ctx.content_rect().center())
+            .pivot(egui::Align2::CENTER_CENTER)
             .open(&mut open)
             .show(ctx, |ui| {
                 egui::Grid::new("settings-grid").num_columns(2).spacing(egui::vec2(14.0, 8.0)).show(ui, |ui| {
@@ -3701,8 +3708,9 @@ impl WarraqApp {
         let s = self.s();
         egui::Window::new(lang::view(s.shortcuts_title))
             .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .resizable(true)
+            .default_pos(ctx.content_rect().center())
+            .pivot(egui::Align2::CENTER_CENTER)
             .open(&mut self.shortcuts_open)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
@@ -3745,7 +3753,8 @@ impl WarraqApp {
             .collapsible(false)
             .resizable(true)
             .default_size([460.0, 390.0])
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_pos(ctx.content_rect().center())
+            .pivot(egui::Align2::CENTER_CENTER)
             .open(&mut open)
             .show(ctx, |ui| {
                 let s = self.s();
@@ -4106,7 +4115,8 @@ impl WarraqApp {
             .collapsible(false)
             .resizable(true)
             .default_width(560.0)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_pos(ctx.content_rect().center())
+            .pivot(egui::Align2::CENTER_CENTER)
             .open(&mut open)
             .show(ctx, |ui| {
                 let s = self.s();
@@ -4296,8 +4306,9 @@ impl WarraqApp {
         let mut open = self.external_modal;
         egui::Window::new(lang::view(self.s().external_title))
             .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .resizable(true)
+            .default_pos(ctx.content_rect().center())
+            .pivot(egui::Align2::CENTER_CENTER)
             .open(&mut open)
             .show(ctx, |ui| {
                 let s = self.s();

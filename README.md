@@ -110,7 +110,11 @@ pwsh scripts/package.ps1 -Version 0.1.0
 ```
 
 The scripts stage the two binaries, licences, notices and templates and
-write release archives under `dist/`.
+write release archives under `dist/`. On Windows a per-user NSIS
+installer (`*-setup.exe`) is also produced from
+[`scripts/installer.nsi`](scripts/installer.nsi) — no admin rights
+needed; it adds a Start Menu entry, an Add/Remove Programs record and a
+".tex → Open with" registration.
 
 ## Command and agent surfaces
 

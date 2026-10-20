@@ -138,8 +138,9 @@ impl CiteDialog {
         let mut picked: Option<String> = None;
         egui::Window::new(lang::view(s.cite_title))
             .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .resizable(true)
+            .default_pos(ctx.content_rect().center())
+            .pivot(egui::Align2::CENTER_CENTER)
             .open(&mut open)
             .show(ctx, |ui| {
                 // Arrows/Enter/Escape are consumed before the filter
