@@ -21,7 +21,7 @@ $rid = if ($IsWindows -or $env:OS -eq "Windows_NT") { "x86_64-pc-windows-msvc" }
        }
        else { "x86_64-unknown-linux-musl" }
 $exe = if ($rid -match "windows") { "tectonic.exe" } else { "tectonic" }
-$ext = if ($rid -match "windows|darwin") { "zip" } else { "tar.gz" }
+$ext = if ($rid -match "windows") { "zip" } else { "tar.gz" }
 
 $asset = "tectonic-$Version-$rid.$ext"
 $url = "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40$Version/$asset"
