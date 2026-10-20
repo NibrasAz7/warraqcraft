@@ -41,6 +41,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      - name: Fetch bundled Tectonic
+        shell: pwsh
+        run: ./scripts/fetch-tectonic.ps1
+
       - name: Build and package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -53,7 +57,7 @@ jobs:
 
       - name: Build and package (Linux/macOS)
         if: runner.os != 'Windows'
-        run: ./scripts/package.sh "$WARRAQCRAFT_VERSION"
+        run: INCLUDE_TECTONIC=1 ./scripts/package.sh "$WARRAQCRAFT_VERSION"
 
       - name: Smoke packaged CLI (Windows)
         if: runner.os == 'Windows'

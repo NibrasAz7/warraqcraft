@@ -12,9 +12,13 @@ $root = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $root "bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 
-# Map this platform to a Tectonic release asset name.
+# Map this platform to a Tectonic release asset name. Apple Silicon and
+# Intel macOS ship different assets — check the host architecture.
 $rid = if ($IsWindows -or $env:OS -eq "Windows_NT") { "x86_64-pc-windows-msvc" }
-       elseif ($IsMacOS) { "x86_64-apple-darwin" }
+       elseif ($IsMacOS) {
+           if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq "Arm64") { "aarch64-apple-darwin" }
+           else { "x86_64-apple-darwin" }
+       }
        else { "x86_64-unknown-linux-musl" }
 $exe = if ($rid -match "windows") { "tectonic.exe" } else { "tectonic" }
 $ext = if ($rid -match "windows|darwin") { "zip" } else { "tar.gz" }

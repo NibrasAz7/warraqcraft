@@ -45,6 +45,11 @@ if [ "$os_name" = "macos" ]; then
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
     cp target/release/warraqcraft "$app/Contents/MacOS/warraqcraft"
     cp target/release/warraqcraft-cli "$app/Contents/MacOS/warraqcraft-cli"
+    # Bundled engine lives next to the executables — find_tectonic checks
+    # the exe directory first.
+    if [ "${INCLUDE_TECTONIC:-0}" = "1" ] && [ -f bin/tectonic ]; then
+        cp bin/tectonic "$app/Contents/MacOS/tectonic"
+    fi
     cp -R templates "$app/Contents/Resources/templates"
     cp README.md LICENSE-APACHE LICENSE-MIT NOTICE "$app/Contents/Resources/"
     cat > "$app/Contents/Info.plist" <<EOF
