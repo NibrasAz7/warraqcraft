@@ -1,0 +1,6 @@
+name = "Arabic book"
+name_ar = "كتاب"
+desc = "Book in Arabic (xelatex)."
+category = "academic"
+lang = "ar"
+engine = "xelatex"

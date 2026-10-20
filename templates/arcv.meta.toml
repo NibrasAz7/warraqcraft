@@ -1,0 +1,6 @@
+name = "Arabic CV"
+name_ar = "سيرة ذاتية"
+desc = "CV in Arabic (xelatex)."
+category = "personal"
+lang = "ar"
+engine = "xelatex"

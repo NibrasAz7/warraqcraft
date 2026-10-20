@@ -1,0 +1,6 @@
+name = "Hindi poster"
+name_hi = "पोस्टर"
+desc = "Poster in Hindi (xelatex)."
+category = "presentation"
+lang = "hi"
+engine = "xelatex"

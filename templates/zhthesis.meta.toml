@@ -1,0 +1,6 @@
+name = "Chinese thesis"
+name_zh = "论文"
+desc = "Thesis in Chinese (xelatex)."
+category = "academic"
+lang = "zh"
+engine = "xelatex"

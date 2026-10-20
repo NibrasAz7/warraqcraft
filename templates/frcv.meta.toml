@@ -1,0 +1,6 @@
+name = "French CV"
+name_fr = "CV"
+desc = "CV in French (pdflatex)."
+category = "personal"
+lang = "fr"
+engine = "pdflatex"

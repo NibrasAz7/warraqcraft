@@ -1,0 +1,6 @@
+name = "Spanish homework"
+name_es = "Tarea"
+desc = "Homework in Spanish (pdflatex)."
+category = "academic"
+lang = "es"
+engine = "pdflatex"

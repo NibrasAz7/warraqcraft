@@ -3349,7 +3349,9 @@ impl WarraqApp {
                                                     ui.label(egui::RichText::new(&card.engine).size(9.0).color(theme::pal().muted));
                                                 }
                                             });
-                                            ui.label(egui::RichText::new(lang::view(&card.desc)).size(9.5).color(theme::pal().muted));
+                                            let desc_text = lang::view(&card.desc).into_owned();
+                                            ui.add(egui::Label::new(egui::RichText::new(&desc_text).size(9.5).color(theme::pal().muted)).truncate())
+                                                .on_hover_text(desc_text);
                                             let origin = if card.origin == "user" { s.tpl_imported } else { s.tpl_bundled };
                                             ui.label(
                                                 egui::RichText::new(format!(

@@ -1,0 +1,6 @@
+name = "Chinese book"
+name_zh = "书籍"
+desc = "Book in Chinese (xelatex)."
+category = "academic"
+lang = "zh"
+engine = "xelatex"

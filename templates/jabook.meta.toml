@@ -1,0 +1,6 @@
+name = "Japanese book"
+name_ja = "書籍"
+desc = "Book in Japanese (xelatex)."
+category = "academic"
+lang = "ja"
+engine = "xelatex"

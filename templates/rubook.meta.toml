@@ -1,0 +1,6 @@
+name = "Russian book"
+name_ru = "книга"
+desc = "Book in Russian (pdflatex)."
+category = "academic"
+lang = "ru"
+engine = "pdflatex"

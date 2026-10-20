@@ -1,0 +1,6 @@
+name = "Urdu poster"
+name_ur = "پوسٹر"
+desc = "Poster in Urdu (xelatex)."
+category = "presentation"
+lang = "ur"
+engine = "xelatex"

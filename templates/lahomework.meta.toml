@@ -1,0 +1,6 @@
+name = "Latin homework"
+name_la = "Pensum"
+desc = "Homework in Latin (pdflatex)."
+category = "academic"
+lang = "la"
+engine = "pdflatex"

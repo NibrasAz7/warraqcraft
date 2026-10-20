@@ -1,0 +1,6 @@
+name = "Persian book"
+name_fa = "کتاب"
+desc = "Book in Persian (xelatex)."
+category = "academic"
+lang = "fa"
+engine = "xelatex"

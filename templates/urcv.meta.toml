@@ -1,0 +1,6 @@
+name = "Urdu CV"
+name_ur = "ریزیومے"
+desc = "CV in Urdu (xelatex)."
+category = "personal"
+lang = "ur"
+engine = "xelatex"

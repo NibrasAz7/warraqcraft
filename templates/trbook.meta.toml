@@ -1,0 +1,6 @@
+name = "Turkish book"
+name_tr = "kitap"
+desc = "Book in Turkish (pdflatex)."
+category = "academic"
+lang = "tr"
+engine = "pdflatex"

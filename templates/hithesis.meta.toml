@@ -1,0 +1,6 @@
+name = "Hindi thesis"
+name_hi = "शोध प्रबंध"
+desc = "Thesis in Hindi (xelatex)."
+category = "academic"
+lang = "hi"
+engine = "xelatex"

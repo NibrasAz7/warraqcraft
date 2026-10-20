@@ -1,0 +1,5 @@
+name = "Homework"
+desc = "Homework starter template (pdflatex)."
+category = "academic"
+lang = "en"
+engine = "pdflatex"

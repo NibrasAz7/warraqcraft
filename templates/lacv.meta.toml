@@ -1,0 +1,6 @@
+name = "Latin CV"
+name_la = "Curriculum vitae"
+desc = "CV in Latin (pdflatex)."
+category = "personal"
+lang = "la"
+engine = "pdflatex"

@@ -1,0 +1,6 @@
+name = "German CV"
+name_de = "Lebenslauf"
+desc = "CV in German (pdflatex)."
+category = "personal"
+lang = "de"
+engine = "pdflatex"

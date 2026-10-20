@@ -1,0 +1,6 @@
+name = "Turkish CV"
+name_tr = "Özgeçmiş"
+desc = "CV in Turkish (pdflatex)."
+category = "personal"
+lang = "tr"
+engine = "pdflatex"

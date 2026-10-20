@@ -1,0 +1,6 @@
+name = "French book"
+name_fr = "livre"
+desc = "Book in French (pdflatex)."
+category = "academic"
+lang = "fr"
+engine = "pdflatex"

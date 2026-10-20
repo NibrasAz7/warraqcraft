@@ -1,0 +1,6 @@
+name = "French homework"
+name_fr = "Devoir"
+desc = "Homework in French (pdflatex)."
+category = "academic"
+lang = "fr"
+engine = "pdflatex"

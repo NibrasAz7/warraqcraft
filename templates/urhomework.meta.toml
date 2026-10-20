@@ -1,0 +1,6 @@
+name = "Urdu homework"
+name_ur = "مشق"
+desc = "Homework in Urdu (xelatex)."
+category = "academic"
+lang = "ur"
+engine = "xelatex"

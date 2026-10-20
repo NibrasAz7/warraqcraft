@@ -1,0 +1,5 @@
+name = "Poster"
+desc = "Poster starter template (pdflatex)."
+category = "presentation"
+lang = "en"
+engine = "pdflatex"

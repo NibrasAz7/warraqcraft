@@ -1,0 +1,6 @@
+name = "Turkish homework"
+name_tr = "Ödev"
+desc = "Homework in Turkish (pdflatex)."
+category = "academic"
+lang = "tr"
+engine = "pdflatex"

@@ -1,0 +1,6 @@
+name = "Italian thesis"
+name_it = "tesi"
+desc = "Thesis in Italian (pdflatex)."
+category = "academic"
+lang = "it"
+engine = "pdflatex"

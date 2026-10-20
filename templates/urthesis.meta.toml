@@ -1,0 +1,6 @@
+name = "Urdu thesis"
+name_ur = "تھیزس"
+desc = "Thesis in Urdu (xelatex)."
+category = "academic"
+lang = "ur"
+engine = "xelatex"

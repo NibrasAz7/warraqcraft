@@ -1,0 +1,6 @@
+name = "Italian homework"
+name_it = "Compito"
+desc = "Homework in Italian (pdflatex)."
+category = "academic"
+lang = "it"
+engine = "pdflatex"

@@ -1,0 +1,6 @@
+name = "German thesis"
+name_de = "Abschlussarbeit"
+desc = "Thesis in German (pdflatex)."
+category = "academic"
+lang = "de"
+engine = "pdflatex"

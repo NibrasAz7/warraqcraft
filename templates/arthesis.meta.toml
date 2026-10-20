@@ -1,0 +1,6 @@
+name = "Arabic thesis"
+name_ar = "أطروحة"
+desc = "Thesis in Arabic (xelatex)."
+category = "academic"
+lang = "ar"
+engine = "xelatex"

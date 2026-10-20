@@ -1,0 +1,5 @@
+name = "CV"
+desc = "Cv starter template (pdflatex)."
+category = "personal"
+lang = "en"
+engine = "pdflatex"

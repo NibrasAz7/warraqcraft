@@ -1,0 +1,6 @@
+name = "Portuguese book"
+name_pt = "livro"
+desc = "Book in Portuguese (pdflatex)."
+category = "academic"
+lang = "pt"
+engine = "pdflatex"

@@ -1,0 +1,6 @@
+name = "German book"
+name_de = "Buch"
+desc = "Book in German (pdflatex)."
+category = "academic"
+lang = "de"
+engine = "pdflatex"

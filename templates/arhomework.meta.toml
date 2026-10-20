@@ -1,0 +1,6 @@
+name = "Arabic homework"
+name_ar = "واجب"
+desc = "Homework in Arabic (xelatex)."
+category = "academic"
+lang = "ar"
+engine = "xelatex"

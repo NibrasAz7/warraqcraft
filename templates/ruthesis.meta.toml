@@ -1,0 +1,6 @@
+name = "Russian thesis"
+name_ru = "диссертация"
+desc = "Thesis in Russian (pdflatex)."
+category = "academic"
+lang = "ru"
+engine = "pdflatex"

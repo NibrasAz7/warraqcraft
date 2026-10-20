@@ -1,0 +1,6 @@
+name = "Hindi CV"
+name_hi = "रिज़्यूमे"
+desc = "CV in Hindi (xelatex)."
+category = "personal"
+lang = "hi"
+engine = "xelatex"

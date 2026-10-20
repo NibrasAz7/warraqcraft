@@ -1,0 +1,28 @@
+% Compile with xelatex or lualatex - pdflatex cannot shape Arabic.
+% Requires an Arabic OpenType font - Amiri by default.
+% !TeX program = xelatex
+\documentclass[11pt]{article}
+\usepackage{polyglossia}
+\setmainlanguage{arabic}
+\setotherlanguage{english}
+\newfontfamily\arabicfont[Script=Arabic]{Amiri}
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\pagestyle{empty}
+
+\begin{document}
+
+{\Large\bfseries اسم المؤلف}\\[4pt]
+{\large كاتب ومنضّد}
+
+\vspace{8pt}
+
+\section*{التعليم}
+٢٠٢٠ — شهادة، جامعة
+
+\section*{الخبرة}
+٢٠٢٤ — منصب، شركة
+
+\section*{المهارات}
+الكتابة، LaTeX، التنضيد
+
+\end{document}

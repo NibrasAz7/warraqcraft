@@ -1,0 +1,26 @@
+% Compile with xelatex or lualatex - pdflatex cannot shape Arabic.
+% Requires an Arabic OpenType font - Amiri by default.
+% !TeX program = xelatex
+\documentclass[11pt]{article}
+\usepackage{polyglossia}
+\setmainlanguage{arabic}
+\setotherlanguage{english}
+\newfontfamily\arabicfont[Script=Arabic]{Amiri}
+
+\title{اسم المقرر — الواجب ١}
+\author{اسم المؤلف}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section*{المسألة 1}
+صُغ المسألة هنا.
+
+\subsection*{الحل}
+اكتب الحل هنا.
+
+\section*{المسألة 2}
+صُغ المسألة هنا.
+
+\end{document}

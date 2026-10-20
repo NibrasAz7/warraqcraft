@@ -1,0 +1,6 @@
+name = "Persian homework"
+name_fa = "تکلیف"
+desc = "Homework in Persian (xelatex)."
+category = "academic"
+lang = "fa"
+engine = "xelatex"

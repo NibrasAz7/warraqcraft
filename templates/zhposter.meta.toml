@@ -1,0 +1,6 @@
+name = "Chinese poster"
+name_zh = "海报"
+desc = "Poster in Chinese (xelatex)."
+category = "presentation"
+lang = "zh"
+engine = "xelatex"

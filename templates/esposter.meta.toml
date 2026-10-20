@@ -1,0 +1,6 @@
+name = "Spanish poster"
+name_es = "Póster"
+desc = "Poster in Spanish (pdflatex)."
+category = "presentation"
+lang = "es"
+engine = "pdflatex"

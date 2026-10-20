@@ -1,0 +1,6 @@
+name = "Japanese homework"
+name_ja = "課題"
+desc = "Homework in Japanese (xelatex)."
+category = "academic"
+lang = "ja"
+engine = "xelatex"

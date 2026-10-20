@@ -1,0 +1,6 @@
+name = "French thesis"
+name_fr = "mémoire"
+desc = "Thesis in French (pdflatex)."
+category = "academic"
+lang = "fr"
+engine = "pdflatex"

@@ -1,0 +1,6 @@
+name = "Turkish thesis"
+name_tr = "tez"
+desc = "Thesis in Turkish (pdflatex)."
+category = "academic"
+lang = "tr"
+engine = "pdflatex"

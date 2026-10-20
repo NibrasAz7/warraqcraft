@@ -1,0 +1,6 @@
+name = "Chinese homework"
+name_zh = "作业"
+desc = "Homework in Chinese (xelatex)."
+category = "academic"
+lang = "zh"
+engine = "xelatex"

@@ -1,0 +1,6 @@
+name = "Spanish thesis"
+name_es = "tesis"
+desc = "Thesis in Spanish (pdflatex)."
+category = "academic"
+lang = "es"
+engine = "pdflatex"

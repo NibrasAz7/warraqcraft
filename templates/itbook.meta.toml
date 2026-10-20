@@ -1,0 +1,6 @@
+name = "Italian book"
+name_it = "libro"
+desc = "Book in Italian (pdflatex)."
+category = "academic"
+lang = "it"
+engine = "pdflatex"

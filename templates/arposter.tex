@@ -1,0 +1,27 @@
+% Compile with xelatex or lualatex - pdflatex cannot shape Arabic.
+% Requires an Arabic OpenType font - Amiri by default.
+% !TeX program = xelatex
+\documentclass{beamer}
+\usepackage{polyglossia}
+\setmainlanguage{arabic}
+\setotherlanguage{english}
+\newfontfamily\arabicfont[Script=Arabic]{Amiri}
+\usepackage[orientation=portrait,size=a0,scale=1.4]{beamerposter}
+
+\title{ملصق عربي}
+\author{اسم المؤلف}
+
+\begin{document}
+\begin{frame}
+\begin{columns}[t]
+  \column{0.48\textwidth}
+  \begin{block}{مقدمة}
+    قدِّم العمل هنا.
+  \end{block}
+  \column{0.48\textwidth}
+  \begin{block}{الخلاصة}
+    لخِّص النتائج هنا.
+  \end{block}
+\end{columns}
+\end{frame}
+\end{document}

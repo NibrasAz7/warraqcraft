@@ -1,0 +1,6 @@
+name = "Hindi book"
+name_hi = "पुस्तक"
+desc = "Book in Hindi (xelatex)."
+category = "academic"
+lang = "hi"
+engine = "xelatex"

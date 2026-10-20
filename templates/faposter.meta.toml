@@ -1,0 +1,6 @@
+name = "Persian poster"
+name_fa = "پوستر"
+desc = "Poster in Persian (xelatex)."
+category = "presentation"
+lang = "fa"
+engine = "xelatex"

@@ -1,0 +1,6 @@
+name = "Korean CV"
+name_ko = "이력서"
+desc = "CV in Korean (xelatex)."
+category = "personal"
+lang = "ko"
+engine = "xelatex"

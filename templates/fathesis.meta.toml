@@ -1,0 +1,6 @@
+name = "Persian thesis"
+name_fa = "پایان‌نامه"
+desc = "Thesis in Persian (xelatex)."
+category = "academic"
+lang = "fa"
+engine = "xelatex"

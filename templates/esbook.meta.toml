@@ -1,0 +1,6 @@
+name = "Spanish book"
+name_es = "libro"
+desc = "Book in Spanish (pdflatex)."
+category = "academic"
+lang = "es"
+engine = "pdflatex"

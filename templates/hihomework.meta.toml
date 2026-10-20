@@ -1,0 +1,6 @@
+name = "Hindi homework"
+name_hi = "गृहकार्य"
+desc = "Homework in Hindi (xelatex)."
+category = "academic"
+lang = "hi"
+engine = "xelatex"

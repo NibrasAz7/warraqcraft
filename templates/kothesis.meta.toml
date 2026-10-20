@@ -1,0 +1,6 @@
+name = "Korean thesis"
+name_ko = "논문"
+desc = "Thesis in Korean (xelatex)."
+category = "academic"
+lang = "ko"
+engine = "xelatex"

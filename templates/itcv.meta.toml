@@ -1,0 +1,6 @@
+name = "Italian CV"
+name_it = "Curriculum vitae"
+desc = "CV in Italian (pdflatex)."
+category = "personal"
+lang = "it"
+engine = "pdflatex"

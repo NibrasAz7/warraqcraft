@@ -1,0 +1,6 @@
+name = "Japanese CV"
+name_ja = "履歴書"
+desc = "CV in Japanese (xelatex)."
+category = "personal"
+lang = "ja"
+engine = "xelatex"

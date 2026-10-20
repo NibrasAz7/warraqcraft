@@ -1,0 +1,6 @@
+name = "Turkish poster"
+name_tr = "Poster"
+desc = "Poster in Turkish (pdflatex)."
+category = "presentation"
+lang = "tr"
+engine = "pdflatex"

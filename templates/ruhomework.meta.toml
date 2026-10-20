@@ -1,0 +1,6 @@
+name = "Russian homework"
+name_ru = "Домашнее задание"
+desc = "Homework in Russian (pdflatex)."
+category = "academic"
+lang = "ru"
+engine = "pdflatex"

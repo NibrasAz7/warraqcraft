@@ -1,0 +1,6 @@
+name = "Portuguese CV"
+name_pt = "Currículo"
+desc = "CV in Portuguese (pdflatex)."
+category = "personal"
+lang = "pt"
+engine = "pdflatex"

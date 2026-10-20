@@ -1,0 +1,6 @@
+name = "Latin book"
+name_la = "liber"
+desc = "Book in Latin (pdflatex)."
+category = "academic"
+lang = "la"
+engine = "pdflatex"

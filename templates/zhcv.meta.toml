@@ -1,0 +1,6 @@
+name = "Chinese CV"
+name_zh = "简历"
+desc = "CV in Chinese (xelatex)."
+category = "personal"
+lang = "zh"
+engine = "xelatex"

@@ -1,0 +1,6 @@
+name = "Korean homework"
+name_ko = "과제"
+desc = "Homework in Korean (xelatex)."
+category = "academic"
+lang = "ko"
+engine = "xelatex"

@@ -1,0 +1,6 @@
+name = "Russian CV"
+name_ru = "Резюме"
+desc = "CV in Russian (pdflatex)."
+category = "personal"
+lang = "ru"
+engine = "pdflatex"

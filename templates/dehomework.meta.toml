@@ -1,0 +1,6 @@
+name = "German homework"
+name_de = "Übungsblatt"
+desc = "Homework in German (pdflatex)."
+category = "academic"
+lang = "de"
+engine = "pdflatex"

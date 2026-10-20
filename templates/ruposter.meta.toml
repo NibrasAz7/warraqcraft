@@ -1,0 +1,6 @@
+name = "Russian poster"
+name_ru = "Постер"
+desc = "Poster in Russian (pdflatex)."
+category = "presentation"
+lang = "ru"
+engine = "pdflatex"

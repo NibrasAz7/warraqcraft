@@ -1,0 +1,6 @@
+name = "Portuguese thesis"
+name_pt = "dissertação"
+desc = "Thesis in Portuguese (pdflatex)."
+category = "academic"
+lang = "pt"
+engine = "pdflatex"

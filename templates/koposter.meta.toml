@@ -1,0 +1,6 @@
+name = "Korean poster"
+name_ko = "포스터"
+desc = "Poster in Korean (xelatex)."
+category = "presentation"
+lang = "ko"
+engine = "xelatex"

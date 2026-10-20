@@ -1,0 +1,6 @@
+name = "Korean book"
+name_ko = "책"
+desc = "Book in Korean (xelatex)."
+category = "academic"
+lang = "ko"
+engine = "xelatex"

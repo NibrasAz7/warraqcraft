@@ -1,0 +1,6 @@
+name = "Latin thesis"
+name_la = "dissertatio"
+desc = "Thesis in Latin (pdflatex)."
+category = "academic"
+lang = "la"
+engine = "pdflatex"

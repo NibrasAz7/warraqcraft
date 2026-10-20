@@ -1,0 +1,6 @@
+name = "Japanese poster"
+name_ja = "ポスター"
+desc = "Poster in Japanese (xelatex)."
+category = "presentation"
+lang = "ja"
+engine = "xelatex"

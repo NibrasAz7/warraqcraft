@@ -1,0 +1,6 @@
+name = "Spanish CV"
+name_es = "Currículum"
+desc = "CV in Spanish (pdflatex)."
+category = "personal"
+lang = "es"
+engine = "pdflatex"

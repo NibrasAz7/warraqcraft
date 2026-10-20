@@ -1,0 +1,6 @@
+name = "Persian CV"
+name_fa = "رزومه"
+desc = "CV in Persian (xelatex)."
+category = "personal"
+lang = "fa"
+engine = "xelatex"

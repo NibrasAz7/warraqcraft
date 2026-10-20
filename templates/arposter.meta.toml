@@ -1,0 +1,6 @@
+name = "Arabic poster"
+name_ar = "ملصق"
+desc = "Poster in Arabic (xelatex)."
+category = "presentation"
+lang = "ar"
+engine = "xelatex"

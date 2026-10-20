@@ -1,0 +1,6 @@
+name = "Portuguese homework"
+name_pt = "Trabalho de casa"
+desc = "Homework in Portuguese (pdflatex)."
+category = "academic"
+lang = "pt"
+engine = "pdflatex"

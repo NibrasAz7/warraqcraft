@@ -42,8 +42,9 @@ research track.
 - **Bibliography and references** — project-wide `\label`/`\ref`
   completion, `.bib` parsing, inline `\cite` key completion, a searchable
   cite dialog and bibliography backend detection.
-- **Templates** — 64 original source-only starters: article, beamer,
-  letter and report for each of the 16 supported document languages,
+- **Templates** — 144 original source-only starters — article, beamer,
+  letter, report, book, thesis, CV, homework and poster for each of the
+  16 supported document languages,
   plus an explicit user/community
   template import that copies text sources only and records provenance.
 - **History and tools** — `.warraqcraft/` snapshot history, named user

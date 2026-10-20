@@ -1,0 +1,6 @@
+name = "Urdu book"
+name_ur = "کتاب"
+desc = "Book in Urdu (xelatex)."
+category = "academic"
+lang = "ur"
+engine = "xelatex"
