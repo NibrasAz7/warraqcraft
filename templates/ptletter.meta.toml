@@ -1,0 +1,6 @@
+name = "Portuguese letter"
+name_pt = "Carta em português"
+desc = "Letter in Portuguese (pdflatex)."
+category = "personal"
+lang = "pt"
+engine = "pdflatex"

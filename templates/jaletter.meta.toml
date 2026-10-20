@@ -1,0 +1,6 @@
+name = "Japanese letter"
+name_ja = "日本語の手紙"
+desc = "Letter in Japanese (xelatex)."
+category = "personal"
+lang = "ja"
+engine = "xelatex"

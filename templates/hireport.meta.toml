@@ -1,0 +1,6 @@
+name = "Hindi report"
+name_hi = "हिन्दी रिपोर्ट"
+desc = "Report in Hindi (xelatex)."
+category = "academic"
+lang = "hi"
+engine = "xelatex"

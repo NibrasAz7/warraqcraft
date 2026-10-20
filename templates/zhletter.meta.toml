@@ -1,0 +1,6 @@
+name = "Chinese letter"
+name_zh = "中文信件"
+desc = "Letter in Chinese (xelatex)."
+category = "personal"
+lang = "zh"
+engine = "xelatex"

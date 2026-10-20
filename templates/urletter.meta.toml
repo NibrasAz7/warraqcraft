@@ -1,0 +1,6 @@
+name = "Urdu letter"
+name_ur = "اردو خط"
+desc = "Letter in Urdu (xelatex)."
+category = "personal"
+lang = "ur"
+engine = "xelatex"

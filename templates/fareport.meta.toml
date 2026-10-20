@@ -1,0 +1,6 @@
+name = "Persian report"
+name_fa = "گزارش فارسی"
+desc = "Report in Persian (xelatex)."
+category = "academic"
+lang = "fa"
+engine = "xelatex"

@@ -1,0 +1,6 @@
+name = "Chinese report"
+name_zh = "中文报告"
+desc = "Report in Chinese (xelatex)."
+category = "academic"
+lang = "zh"
+engine = "xelatex"

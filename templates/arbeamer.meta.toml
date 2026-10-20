@@ -1,0 +1,6 @@
+name = "Arabic beamer"
+name_ar = "عرض تقديمي عربي"
+desc = "Beamer presentation in Arabic (xelatex)."
+category = "presentation"
+lang = "ar"
+engine = "xelatex"

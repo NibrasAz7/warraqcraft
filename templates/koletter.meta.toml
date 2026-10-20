@@ -1,0 +1,6 @@
+name = "Korean letter"
+name_ko = "한국어 편지"
+desc = "Letter in Korean (xelatex)."
+category = "personal"
+lang = "ko"
+engine = "xelatex"

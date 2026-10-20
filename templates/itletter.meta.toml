@@ -1,0 +1,6 @@
+name = "Italian letter"
+name_it = "Lettera italiana"
+desc = "Letter in Italian (pdflatex)."
+category = "personal"
+lang = "it"
+engine = "pdflatex"

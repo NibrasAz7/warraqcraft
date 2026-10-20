@@ -1,0 +1,6 @@
+name = "Italian report"
+name_it = "Relazione in italiano"
+desc = "Report in Italian (pdflatex)."
+category = "academic"
+lang = "it"
+engine = "pdflatex"

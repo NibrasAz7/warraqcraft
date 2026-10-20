@@ -1,0 +1,6 @@
+name = "Japanese report"
+name_ja = "日本語レポート"
+desc = "Report in Japanese (xelatex)."
+category = "academic"
+lang = "ja"
+engine = "xelatex"

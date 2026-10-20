@@ -1,0 +1,6 @@
+name = "Turkish report"
+name_tr = "Türkçe rapor"
+desc = "Report in Turkish (pdflatex)."
+category = "academic"
+lang = "tr"
+engine = "pdflatex"

@@ -1,0 +1,6 @@
+name = "Hindi beamer"
+name_hi = "हिन्दी प्रस्तुति"
+desc = "Beamer presentation in Hindi (xelatex)."
+category = "presentation"
+lang = "hi"
+engine = "xelatex"

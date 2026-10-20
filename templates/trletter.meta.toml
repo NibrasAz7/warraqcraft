@@ -1,0 +1,6 @@
+name = "Turkish letter"
+name_tr = "Türkçe mektup"
+desc = "Letter in Turkish (pdflatex)."
+category = "personal"
+lang = "tr"
+engine = "pdflatex"

@@ -2118,20 +2118,28 @@ impl WarraqApp {
                 // Icon row: new file / new folder / refresh / open.
                 ui.horizontal(|ui| {
                     let root = self.project_root();
-                    if icon_button(ui, 14.0, icons::page_new, "", true).on_hover_text(lang::view(s.new_file)).clicked() {
+                    if icon_button_tinted(ui, 14.0, icons::page_new, "", true, theme::pal().accent).on_hover_text(lang::view(s.new_file)).clicked() {
                         self.new_untitled();
                     }
-                    if icon_button(ui, 14.0, icons::folder_new, "", true).on_hover_text(lang::view(s.new_folder)).clicked() {
+                    if icon_button_tinted(ui, 14.0, icons::folder_new, "", true, theme::pal().warn).on_hover_text(lang::view(s.new_folder)).clicked()
+                    {
                         self.new_entry = Some(NewEntry { dir: root.clone(), name: String::new(), is_dir: true });
                     }
-                    if icon_button(ui, 14.0, icons::rebuild, "", true).on_hover_text(lang::view(s.refresh_tree)).clicked() {
+                    if icon_button_tinted(ui, 14.0, icons::rebuild, "", true, theme::pal().faint).on_hover_text(lang::view(s.refresh_tree)).clicked()
+                    {
                         self.tree_scanned_at = f64::NEG_INFINITY;
                     }
-                    if icon_button(ui, 14.0, icons::folder_open, "", true).on_hover_text(lang::view(s.open_file)).clicked() {
+                    if icon_button_tinted(ui, 14.0, icons::folder_open, "", true, theme::pal().syn_brace)
+                        .on_hover_text(lang::view(s.open_file))
+                        .clicked()
+                    {
                         self.open_dialog();
                     }
                     #[cfg(not(target_arch = "wasm32"))]
-                    if icon_button(ui, 14.0, icons::page_plus, "", true).on_hover_text(lang::view(s.new_from_template)).clicked() {
+                    if filled_icon_button(ui, 14.0, icons::page_plus, "", theme::pal().accent_dim, true)
+                        .on_hover_text(lang::view(s.new_from_template))
+                        .clicked()
+                    {
                         self.load_templates();
                         self.tpl_sel = None;
                         self.tpl_name.clear();
@@ -4644,6 +4652,19 @@ fn offset_of_line_col(src: &str, line: usize, col: usize) -> usize {
 /// bundled fonts lack most symbol ranges, so Unicode icons show as
 /// squares. `paint` draws inside a `side`×`side` rect left of `label`.
 fn icon_button(ui: &mut egui::Ui, side: f32, paint: fn(&egui::Painter, egui::Rect, egui::Color32), label: &str, enabled: bool) -> egui::Response {
+    icon_button_tinted(ui, side, paint, label, enabled, theme::pal().muted)
+}
+
+/// Same flat icon button with a semantic tint so adjacent actions can
+/// be told apart without hovering.
+fn icon_button_tinted(
+    ui: &mut egui::Ui,
+    side: f32,
+    paint: fn(&egui::Painter, egui::Rect, egui::Color32),
+    label: &str,
+    enabled: bool,
+    tint: egui::Color32,
+) -> egui::Response {
     let text_w = if label.is_empty() {
         0.0
     } else {
@@ -4656,7 +4677,7 @@ fn icon_button(ui: &mut egui::Ui, side: f32, paint: fn(&egui::Painter, egui::Rec
     } else if resp.hovered() {
         theme::pal().text
     } else {
-        theme::pal().muted
+        tint
     };
     if enabled && resp.hovered() {
         ui.painter().rect_filled(rect, 4.0, theme::pal().hovered);

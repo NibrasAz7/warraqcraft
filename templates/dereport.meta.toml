@@ -1,0 +1,6 @@
+name = "German report"
+name_de = "Deutscher Bericht"
+desc = "Report in German (pdflatex)."
+category = "academic"
+lang = "de"
+engine = "pdflatex"

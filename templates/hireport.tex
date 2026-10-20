@@ -1,0 +1,28 @@
+% !TEX program = xelatex
+\documentclass[12pt]{report}
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setmainlanguage{hindi}
+\setotherlanguage{english}
+\setmainfont{Noto Sans Devanagari}
+\newfontfamily\devanagarifont[Script=Devanagari]{Noto Sans Devanagari}
+
+\title{हिन्दी रिपोर्ट}
+\author{वक्ता का नाम}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+\chapter{परिचय}
+कार्य का परिचय यहाँ दें।
+
+\chapter{निष्कर्ष}
+परिणामों का सार यहाँ लिखें।
+
+% Grow the project with external chapter files, e.g.:
+% \input{chapters/methods}
+
+\end{document}

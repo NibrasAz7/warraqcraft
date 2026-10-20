@@ -1,0 +1,6 @@
+name = "Chinese beamer"
+name_zh = "中文演示文稿"
+desc = "Beamer presentation in Chinese (xelatex)."
+category = "presentation"
+lang = "zh"
+engine = "xelatex"

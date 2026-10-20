@@ -1,0 +1,6 @@
+name = "French letter"
+name_fr = "Lettre française"
+desc = "Letter in French (pdflatex)."
+category = "personal"
+lang = "fr"
+engine = "pdflatex"

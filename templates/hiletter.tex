@@ -1,0 +1,24 @@
+% !TEX program = xelatex
+\documentclass{letter}
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setmainlanguage{hindi}
+\setotherlanguage{english}
+\setmainfont{Noto Sans Devanagari}
+\newfontfamily\devanagarifont[Script=Devanagari]{Noto Sans Devanagari}
+
+\signature{आपका नाम}
+\address{आपका पता \\ आपका शहर}
+
+\begin{document}
+
+\begin{letter}{प्राप्तकर्ता का नाम \\ प्राप्तकर्ता का पता \\ शहर}
+\opening{प्रिय प्राप्तकर्ता,}
+
+पत्र का मुख्य भाग यहाँ लिखें।
+
+\closing{सादर,}
+
+\end{letter}
+
+\end{document}

@@ -1,0 +1,6 @@
+name = "Russian letter"
+name_ru = "Письмо на русском"
+desc = "Letter in Russian (pdflatex)."
+category = "personal"
+lang = "ru"
+engine = "pdflatex"

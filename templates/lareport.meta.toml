@@ -1,0 +1,6 @@
+name = "Latin report"
+name_la = "Commentarius Latinus"
+desc = "Report in Latin (pdflatex)."
+category = "academic"
+lang = "la"
+engine = "pdflatex"

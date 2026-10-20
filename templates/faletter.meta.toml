@@ -1,0 +1,6 @@
+name = "Persian letter"
+name_fa = "نامهٔ فارسی"
+desc = "Letter in Persian (xelatex)."
+category = "personal"
+lang = "fa"
+engine = "xelatex"

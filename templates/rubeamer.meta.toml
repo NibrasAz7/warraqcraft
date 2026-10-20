@@ -1,0 +1,6 @@
+name = "Russian beamer"
+name_ru = "Русская презентация"
+desc = "Beamer presentation in Russian (pdflatex)."
+category = "presentation"
+lang = "ru"
+engine = "pdflatex"

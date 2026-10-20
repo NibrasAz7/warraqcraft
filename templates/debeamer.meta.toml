@@ -1,0 +1,6 @@
+name = "German beamer"
+name_de = "Deutsche Präsentation"
+desc = "Beamer presentation in German (pdflatex)."
+category = "presentation"
+lang = "de"
+engine = "pdflatex"

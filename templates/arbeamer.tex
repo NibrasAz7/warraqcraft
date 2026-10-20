@@ -1,0 +1,29 @@
+% Compile with xelatex or lualatex - pdflatex cannot shape Arabic.
+% Requires an Arabic OpenType font - Amiri by default.
+% !TeX program = xelatex
+\documentclass{beamer}
+\usepackage{polyglossia}
+\setmainlanguage{arabic}
+\setotherlanguage{english}
+\newfontfamily\arabicfont[Script=Arabic]{Amiri}
+
+\usetheme{default}
+\title{عرض تقديمي عربي}
+\author{اسم المقدّم}
+\date{\today}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}{المحتويات}
+  \begin{itemize}
+    \item النقطة الأولى
+    \item النقطة الثانية
+    \item النقطة الثالثة
+  \end{itemize}
+\end{frame}
+
+\end{document}

@@ -1,0 +1,6 @@
+name = "French report"
+name_fr = "Rapport en français"
+desc = "Report in French (pdflatex)."
+category = "academic"
+lang = "fr"
+engine = "pdflatex"

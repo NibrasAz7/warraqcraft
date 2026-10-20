@@ -1,0 +1,6 @@
+name = "Latin letter"
+name_la = "Epistula Latina"
+desc = "Letter in Latin (pdflatex)."
+category = "personal"
+lang = "la"
+engine = "pdflatex"

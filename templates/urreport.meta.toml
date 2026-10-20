@@ -1,0 +1,6 @@
+name = "Urdu report"
+name_ur = "اردو رپورٹ"
+desc = "Report in Urdu (xelatex)."
+category = "academic"
+lang = "ur"
+engine = "xelatex"

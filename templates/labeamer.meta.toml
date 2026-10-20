@@ -1,0 +1,6 @@
+name = "Latin beamer"
+name_la = "Praesentatio Latina"
+desc = "Beamer presentation in Latin (pdflatex)."
+category = "presentation"
+lang = "la"
+engine = "pdflatex"

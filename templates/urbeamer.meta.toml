@@ -1,0 +1,6 @@
+name = "Urdu beamer"
+name_ur = "اردو پریزنٹیشن"
+desc = "Beamer presentation in Urdu (xelatex)."
+category = "presentation"
+lang = "ur"
+engine = "xelatex"

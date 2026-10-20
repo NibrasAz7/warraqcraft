@@ -1,0 +1,6 @@
+name = "Japanese beamer"
+name_ja = "日本語プレゼンテーション"
+desc = "Beamer presentation in Japanese (xelatex)."
+category = "presentation"
+lang = "ja"
+engine = "xelatex"

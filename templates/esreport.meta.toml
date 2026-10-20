@@ -1,0 +1,6 @@
+name = "Spanish report"
+name_es = "Informe en español"
+desc = "Report in Spanish (pdflatex)."
+category = "academic"
+lang = "es"
+engine = "pdflatex"

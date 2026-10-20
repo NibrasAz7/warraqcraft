@@ -1,0 +1,6 @@
+name = "Korean beamer"
+name_ko = "한국어 프레젤테이션"
+desc = "Beamer presentation in Korean (xelatex)."
+category = "presentation"
+lang = "ko"
+engine = "xelatex"

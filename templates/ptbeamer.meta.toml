@@ -1,0 +1,6 @@
+name = "Portuguese beamer"
+name_pt = "Apresentação em português"
+desc = "Beamer presentation in Portuguese (pdflatex)."
+category = "presentation"
+lang = "pt"
+engine = "pdflatex"

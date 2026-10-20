@@ -1,0 +1,6 @@
+name = "French beamer"
+name_fr = "Présentation française"
+desc = "Beamer presentation in French (pdflatex)."
+category = "presentation"
+lang = "fr"
+engine = "pdflatex"

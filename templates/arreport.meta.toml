@@ -1,0 +1,6 @@
+name = "Arabic report"
+name_ar = "تقرير عربي"
+desc = "Report in Arabic (xelatex)."
+category = "academic"
+lang = "ar"
+engine = "xelatex"

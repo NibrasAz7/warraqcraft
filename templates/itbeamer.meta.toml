@@ -1,0 +1,6 @@
+name = "Italian beamer"
+name_it = "Presentazione italiana"
+desc = "Beamer presentation in Italian (pdflatex)."
+category = "presentation"
+lang = "it"
+engine = "pdflatex"

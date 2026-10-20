@@ -1,0 +1,6 @@
+name = "Russian report"
+name_ru = "Отчёт на русском"
+desc = "Report in Russian (pdflatex)."
+category = "academic"
+lang = "ru"
+engine = "pdflatex"

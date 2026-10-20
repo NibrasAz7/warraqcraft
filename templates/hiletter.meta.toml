@@ -1,0 +1,6 @@
+name = "Hindi letter"
+name_hi = "हिन्दी पत्र"
+desc = "Letter in Hindi (xelatex)."
+category = "personal"
+lang = "hi"
+engine = "xelatex"

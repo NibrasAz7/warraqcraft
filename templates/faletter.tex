@@ -1,0 +1,24 @@
+% !TEX program = xelatex
+\documentclass{letter}
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setmainlanguage{persian}
+\setotherlanguage{english}
+\setmainfont{Amiri}
+\newfontfamily\persianfont[Script=Arabic]{Amiri}
+
+\signature{نام شما}
+\address{نشانی شما \\ شهر}
+
+\begin{document}
+
+\begin{letter}{نام گیرنده \\ نشانی گیرنده \\ شهر}
+\opening{گیرندهٔ گرامی،}
+
+متن نامه را این‌جا بنویسید.
+
+\closing{با احترام،}
+
+\end{letter}
+
+\end{document}

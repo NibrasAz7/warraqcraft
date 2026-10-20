@@ -1,0 +1,28 @@
+% Compile with xelatex or lualatex - pdflatex cannot shape Arabic.
+% Requires an Arabic OpenType font - Amiri by default.
+% !TeX program = xelatex
+\documentclass[12pt]{report}
+\usepackage{polyglossia}
+\setmainlanguage{arabic}
+\setotherlanguage{english}
+\newfontfamily\arabicfont[Script=Arabic]{Amiri}
+
+\title{تقرير عربي}
+\author{اسم المقدّم}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+\chapter{مقدمة}
+قدِّم العمل هنا.
+
+\chapter{الخلاصة}
+لخِّص النتائج هنا.
+
+% Grow the project with external chapter files, e.g.:
+% \input{chapters/methods}
+
+\end{document}

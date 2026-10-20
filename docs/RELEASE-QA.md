@@ -53,8 +53,8 @@ tools).
   `dist/warraqcraft-0.1.0-windows-x64.zip`
   SHA-256: `220201edce45615f9d157aadf850ba971bd857f3c1f69c16b0f7844616eadca6`
 - Package inspection found both executables, bundled `bin/tectonic.exe`,
-  all 20 shipped templates, README, licences and NOTICE.
-- The packaged CLI listed 61 engine commands, returned all 20 templates
+  all 64 shipped templates, README, licences and NOTICE.
+- The packaged CLI listed 61 engine commands, returned all 64 templates
   and produced project structure; MCP `initialize`/`tools/list` returned
   61 tools.
 - The packaged app launched with a control file and served `source.get`,
@@ -70,7 +70,7 @@ tools).
   `dist/warraqcraft-0.1.0-linux-x86_64.deb`
   SHA-256: `776bda84aab315ab89575d601d0a8c803d9df5954142f890a8af181b679e32ab`.
 - The `.deb` installed with `dpkg -i`; `/usr/bin/warraqcraft-cli` listed
-  61 commands and found all 20 templates under
+  61 commands and found all 64 templates under
   `/usr/share/warraqcraft/templates`; files install `root:root` `755`.
 - The packaged GUI launched through WSLg and served `source.get` and
   `ai.eval.list`; MCP `initialize`/`tools/list` returned 61 tools.

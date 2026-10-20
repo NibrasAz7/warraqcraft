@@ -1,0 +1,6 @@
+name = "Korean report"
+name_ko = "한국어 보고서"
+desc = "Report in Korean (xelatex)."
+category = "academic"
+lang = "ko"
+engine = "xelatex"

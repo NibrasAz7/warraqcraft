@@ -1,0 +1,6 @@
+name = "Persian beamer"
+name_fa = "ارائهٔ فارسی"
+desc = "Beamer presentation in Persian (xelatex)."
+category = "presentation"
+lang = "fa"
+engine = "xelatex"
