@@ -75,6 +75,23 @@ pub struct CiteDialog {
     /// Editor caret (char index) captured when the dialog opened — the
     /// filter steals focus, so insertion lands where the user was.
     pub saved_caret: Option<usize>,
+    /// Identifier-paste field for `cite.fetch` (DOI/arXiv/PMID).
+    fetch_text: String,
+    /// A resolve request the app picks up and dispatches on a worker —
+    /// the dialog stays open while the network call runs.
+    pub pending_fetch: Option<String>,
+    /// Set by the app while `cite.fetch` is in flight — the row shows a
+    /// busy hint instead of re-firing.
+    pub fetch_busy: bool,
+    /// Cite keys that have a PDF in the project library — set by the app
+    /// when the dialog opens.
+    pub attached: std::collections::BTreeSet<String>,
+    /// The selected key asked for a PDF attachment — the app picks the
+    /// file and runs `library.attach`.
+    pub pending_attach: Option<String>,
+    /// The selected key asked to open its attached PDF — the app shows
+    /// it in the reader pane.
+    pub pending_open: Option<String>,
 }
 
 impl CiteDialog {
@@ -91,6 +108,12 @@ impl CiteDialog {
     /// Whether the dialog is currently up.
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Close the dialog — the app calls this after a `cite.fetch`
+    /// resolved key is inserted.
+    pub fn close(&mut self) {
+        self.open = false;
     }
 
     /// `.bib` files in `root` and its immediate subdirectories.
@@ -144,9 +167,14 @@ impl CiteDialog {
             .open(&mut open)
             .show(ctx, |ui| {
                 // Arrows/Enter/Escape are consumed before the filter
-                // TextEdit runs — typed text still reaches it.
+                // TextEdit runs — typed text still reaches it. While the
+                // fetch field has focus, Enter resolves the identifier
+                // instead of picking a list row.
+                let fetch_id = egui::Id::new("cite-fetch");
+                let fetch_focused = ctx.memory(|m| m.has_focus(fetch_id));
                 let mut nav = false;
                 let mut want_pick = false;
+                let mut want_fetch = false;
                 ctx.input_mut(|i| {
                     if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
                         self.sel = self.sel.saturating_add(1);
@@ -157,12 +185,19 @@ impl CiteDialog {
                         nav = true;
                     }
                     if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
-                        want_pick = true;
+                        if fetch_focused {
+                            want_fetch = true;
+                        } else {
+                            want_pick = true;
+                        }
                     }
                     if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                         close = true;
                     }
                 });
+                // wasm never renders the fetch row; the flag stays false.
+                #[cfg(target_arch = "wasm32")]
+                let _ = want_fetch;
 
                 // Per-file parse notes, kept subtle — entries still list.
                 ui.horizontal(|ui| {
@@ -220,6 +255,7 @@ impl CiteDialog {
                             detail.push_str(&format!("({})", e.year));
                         }
                         let label = if detail.is_empty() { e.key.clone() } else { format!("{} — {detail}", e.key) };
+                        let label = if self.attached.contains(&e.key) { format!("📎 {label}") } else { label };
                         let resp = ui.selectable_label(row == self.sel, egui::RichText::new(lang::view(&label)).size(11.5)).on_hover_text(&e.file);
                         if nav && row == self.sel {
                             resp.scroll_to_me(Some(egui::Align::Center));
@@ -232,6 +268,53 @@ impl CiteDialog {
                         ui.label(egui::RichText::new(format!("… {} more — keep typing", matches.len() - MAX_ROWS)).size(10.0).color(pal.faint));
                     }
                 });
+
+                // Selected row: attach a PDF to the key, or read the one
+                // already attached.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let sel_key = matches.get(self.sel).and_then(|&i| self.entries.get(i)).map(|e| e.key.clone());
+                    if let Some(k) = sel_key {
+                        ui.horizontal(|ui| {
+                            if ui.small_button(lang::view(s.cite_attach)).clicked() {
+                                self.pending_attach = Some(k.clone());
+                            }
+                            if self.attached.contains(&k) && ui.small_button(lang::view(s.cite_read)).clicked() {
+                                self.pending_open = Some(k.clone());
+                            }
+                        });
+                    }
+                }
+
+                // Paste an identifier → `cite.fetch` resolves it to a
+                // .bib entry via the public providers. Native-only: the
+                // web build has no network resolver.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.fetch_text)
+                                .id(fetch_id)
+                                .hint_text(lang::view(s.cite_fetch_hint))
+                                .desired_width(250.0),
+                        );
+                        let busy = self.fetch_busy;
+                        let go = ui
+                            .add_enabled(!busy && !self.fetch_text.trim().is_empty(), egui::Button::new(lang::view(s.cite_fetch_go)))
+                            .on_hover_text(lang::view(s.cite_fetch_hint));
+                        if busy {
+                            ui.label(egui::RichText::new(lang::view(s.cite_fetch_busy)).size(10.0).color(pal.muted));
+                        }
+                        if (go.clicked() || want_fetch) && !busy {
+                            let id = self.fetch_text.trim().to_string();
+                            if !id.is_empty() {
+                                self.pending_fetch = Some(id);
+                                self.fetch_text.clear();
+                            }
+                        }
+                    });
+                }
             });
         self.open = open && !close && picked.is_none();
         picked
@@ -273,6 +356,16 @@ pub fn insert_text(src: &str, caret: usize, key: &str) -> String {
         format!("{key},")
     } else {
         format!("\\cite{{{key}}}")
+    }
+}
+
+/// Like [`insert_text`] but with a page locator: `\cite[p.~N]{key}` —
+/// "quote page N of the attached PDF".
+pub fn insert_text_paged(src: &str, caret: usize, key: &str, page: usize) -> String {
+    if inside_cite_args(src, caret) {
+        format!("{key},")
+    } else {
+        format!("\\cite[p.~{page}]{{{key}}}")
     }
 }
 

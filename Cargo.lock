@@ -3968,6 +3968,7 @@ dependencies = [
  "craft-atomic",
  "serde_json",
  "texparse",
+ "ureq",
 ]
 
 [[package]]

@@ -32,13 +32,19 @@ pub mod ai;
 pub mod ai_eval;
 pub mod ai_harness;
 pub mod ai_repair;
+pub mod citefetch;
 pub mod history;
+pub mod library;
+mod logrules;
 pub mod preview;
 pub mod project;
 pub mod repo;
+pub mod snippets;
 pub mod stats;
+pub mod suggest;
 pub mod synctex;
 pub mod templates;
+pub mod toolchain;
 pub mod tools;
 
 pub use tools::UserTool;
@@ -69,6 +75,19 @@ pub const COMMANDS: &[&str] = &[
     "template.import",
     "project.graph",
     "project.structure",
+    "toolchain.probe",
+    "cite.fetch",
+    "bib.audit",
+    "doc.suggest",
+    "doc.suggest.list",
+    "doc.suggest.apply",
+    "doc.suggest.reject",
+    "snippet.list",
+    "snippet.expand",
+    "library.attach",
+    "library.list",
+    "library.get",
+    "library.detach",
     "repo.status",
     "repo.init",
     "repo.remote",
@@ -188,6 +207,23 @@ pub struct CompileError {
     pub line: Option<u32>,
     /// Error message (single line).
     pub message: String,
+    /// Stable rule id from `logrules` (e.g. "undefined-command").
+    pub rule: Option<&'static str>,
+    /// Plain-language explanation from the rule table.
+    pub hint: Option<String>,
+    /// Package whose absence is the usual cause (`{file}.sty` basename).
+    pub package: Option<String>,
+    /// The offending `\command` when the message names one.
+    pub command: Option<String>,
+    /// Consequence noise — an earlier diagnostic already explains it.
+    pub cascade: bool,
+}
+
+impl CompileError {
+    /// An unenriched diagnostic — `logrules::enrich` fills the extras.
+    fn raw(file: Option<PathBuf>, line: Option<u32>, message: String) -> Self {
+        CompileError { file, line, message, rule: None, hint: None, package: None, command: None, cascade: false }
+    }
 }
 
 /// Result of one `document.compile` run.
@@ -209,16 +245,20 @@ pub struct CompileReport {
 
 impl CompileReport {
     fn to_json(&self) -> Value {
-        let errs: Vec<Value> = self
-            .errors
-            .iter()
-            .map(|e| json!({"file": e.file.as_ref().map(|p| p.display().to_string()), "line": e.line, "message": e.message}))
-            .collect();
-        let warns: Vec<Value> = self
-            .warnings
-            .iter()
-            .map(|w| json!({"file": w.file.as_ref().map(|p| p.display().to_string()), "line": w.line, "message": w.message}))
-            .collect();
+        let diag = |d: &CompileError| {
+            json!({
+                "file": d.file.as_ref().map(|p| p.display().to_string()),
+                "line": d.line,
+                "message": d.message,
+                "rule": d.rule,
+                "hint": d.hint,
+                "package": d.package,
+                "command": d.command,
+                "cascade": d.cascade,
+            })
+        };
+        let errs: Vec<Value> = self.errors.iter().map(&diag).collect();
+        let warns: Vec<Value> = self.warnings.iter().map(&diag).collect();
         json!({
             "engine": self.engine,
             "pdf": self.pdf.as_ref().map(|p| p.display().to_string()),
@@ -255,6 +295,10 @@ pub struct Session {
     /// Session-scoped AI memory; cleared with the session and never
     /// persisted unless explicitly promoted into project/task/user scope.
     ai_session_memory: BTreeMap<String, Value>,
+    /// Pending anchored edit proposals from `doc.suggest`.
+    suggestions: Vec<suggest::Suggestion>,
+    /// Monotonic id source for suggestions.
+    suggestion_seq: u32,
 }
 
 impl Session {
@@ -265,12 +309,37 @@ impl Session {
 
     /// Session prefilled with `src`, not dirty (e.g. an editor template).
     pub fn with_source(src: String) -> Self {
-        Self { path: None, src, dirty: false, disk_stamp: None, user_tools: Vec::new(), ai_session_memory: BTreeMap::new() }
+        Self {
+            path: None,
+            src,
+            dirty: false,
+            disk_stamp: None,
+            user_tools: Vec::new(),
+            ai_session_memory: BTreeMap::new(),
+            suggestions: Vec::new(),
+            suggestion_seq: 0,
+        }
     }
 
     /// Path of the open file, if any.
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// Pending anchored edit proposals (`doc.suggest`).
+    pub fn suggestions(&self) -> &[suggest::Suggestion] {
+        &self.suggestions
+    }
+
+    /// Mutable access for `doc.suggest.*` commands.
+    pub(crate) fn suggestions_mut(&mut self) -> &mut Vec<suggest::Suggestion> {
+        &mut self.suggestions
+    }
+
+    /// Next suggestion id.
+    pub(crate) fn next_suggestion_id(&mut self) -> String {
+        self.suggestion_seq += 1;
+        format!("s{}", self.suggestion_seq)
     }
 
     /// Current source text.
@@ -531,6 +600,19 @@ impl Session {
             // Merged outline + labels across the reachable \input graph —
             // the open file is parsed from the live buffer (M3).
             "project.structure" => project::run(self),
+            "toolchain.probe" => Ok(toolchain::probe_json(find_tectonic())),
+            "cite.fetch" => citefetch::fetch(self, params),
+            "bib.audit" => citefetch::audit(self),
+            "doc.suggest" => suggest::suggest(self, params),
+            "doc.suggest.list" => suggest::list(self),
+            "doc.suggest.apply" => suggest::apply(self, params),
+            "doc.suggest.reject" => suggest::reject(self, params),
+            "snippet.list" => snippets::list(self),
+            "snippet.expand" => snippets::expand_cmd(self, params),
+            "library.attach" => library::attach(self, params),
+            "library.list" => library::list(self),
+            "library.get" => library::get(self, params),
+            "library.detach" => library::detach(self, params),
             // Git-native collaboration: explicit, fixed-argv operations
             // against the project repository; credentials stay with Git.
             "repo.status" => repo::status(self, params),
@@ -613,14 +695,10 @@ struct Engine {
     program: PathBuf,
 }
 
-fn on_path(name: &str) -> bool {
-    Command::new(name).arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
-}
-
 /// Locate a usable `tectonic` binary, most-trusted first: the
 /// `WARRAQCRAFT_TECTONIC` env override, then bundled next to the app
 /// (installed layout), then `bin/` under the cwd or the workspace
-/// root (dev layout), finally PATH.
+/// root (dev layout), finally PATH and well-known install dirs.
 fn find_tectonic() -> Option<PathBuf> {
     let exe_name = if cfg!(windows) { "tectonic.exe" } else { "tectonic" };
     if let Some(p) = std::env::var_os("WARRAQCRAFT_TECTONIC").map(PathBuf::from).filter(|p| p.is_file()) {
@@ -643,44 +721,82 @@ fn find_tectonic() -> Option<PathBuf> {
     if let Some(p) = candidates.into_iter().find(|p| p.is_file()) {
         return Some(p);
     }
-    if on_path("tectonic") {
-        return Some(PathBuf::from("tectonic"));
-    }
-    None
+    toolchain::find_program("tectonic")
 }
 
 /// Engine binaries found — for UI pickers. Bundled/PATH `tectonic`
-/// first (the zero-install engine), then system TeX on PATH.
+/// first (the zero-install engine), then system TeX wherever it lives —
+/// PATH *or* the well-known install roots a GUI never sees on PATH.
 pub fn detect_engines() -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
     if find_tectonic().is_some() {
         found.push("tectonic".to_string());
     }
-    found.extend(ENGINE_CANDIDATES.iter().filter(|c| on_path(c)).map(|c| c.to_string()));
+    found.extend(ENGINE_CANDIDATES.iter().filter(|c| toolchain::find_program(c).is_some()).map(|c| c.to_string()));
     found
 }
 
-/// Resolve an engine name to a runnable program.
+/// Resolve an engine name to a runnable program — a full path, so its
+/// sibling tools (biber, bibtex, kpathsea) can be found by prepending
+/// the engine's directory to the child's PATH.
 fn resolve_engine(name: &str) -> Option<Engine> {
     if name == "tectonic" {
         return find_tectonic().map(|p| Engine { name: name.to_string(), program: p });
     }
-    if on_path(name) {
-        return Some(Engine { name: name.to_string(), program: PathBuf::from(name) });
-    }
-    None
+    toolchain::find_program(name).map(|p| Engine { name: name.to_string(), program: p })
 }
 
 /// Pick a TeX engine. Bundled/PATH `tectonic` wins — it is the
 /// zero-install engine and is XeTeX-based, so it also covers the
-/// `unicode` requirement; otherwise fall back to system TeX on PATH.
+/// `unicode` requirement; otherwise fall back to system TeX.
 fn find_engine(unicode: bool) -> Option<Engine> {
     if let Some(p) = find_tectonic() {
         return Some(Engine { name: "tectonic".to_string(), program: p });
     }
     const UNICODE: [&str; 2] = ["xelatex", "lualatex"];
     let candidates: &[&str] = if unicode { &UNICODE } else { ENGINE_CANDIDATES };
-    candidates.iter().find(|c| on_path(c)).map(|c| Engine { name: c.to_string(), program: PathBuf::from(c) })
+    candidates.iter().find_map(|c| toolchain::find_program(c).map(|p| Engine { name: c.to_string(), program: p }))
+}
+
+/// Build artifacts that go stale when a document switches packages or
+/// bib backends — purged before each compile so a previous run's
+/// `.bcf`/`.bbl`/`.aux` can't mislead the tool-choice detection. The
+/// PDF and SyncTeX are deliberately kept: a failed rebuild still serves
+/// the last good preview pair.
+const STALE_EXTS: &[&str] = &[
+    "aux",
+    "bbl",
+    "bcf",
+    "blg",
+    "run.xml",
+    "out",
+    "toc",
+    "lof",
+    "lot",
+    "nav",
+    "snm",
+    "vrb",
+    "fls",
+    "fdb_latexmk",
+    "idx",
+    "ilg",
+    "ind",
+    "acn",
+    "acr",
+    "alg",
+    "glg",
+    "glo",
+    "gls",
+    "xdv",
+    "log",
+];
+
+/// Remove `{stem}.{ext}` for every stale-family extension in `outdir`.
+/// Errors are ignored — a file that can't be deleted just stays.
+fn purge_stale_artifacts(outdir: &Path, stem: &str) {
+    for ext in STALE_EXTS {
+        let _ = std::fs::remove_file(outdir.join(format!("{stem}.{ext}")));
+    }
 }
 
 /// Compile `path` with a system TeX engine into `<dir>/.warraqcraft/`.
@@ -739,37 +855,49 @@ pub fn compile_file_with(path: &Path, src: Option<&str>, engine_override: Option
     let outdir = parent.join(BUILD_DIR);
     std::fs::create_dir_all(&outdir)?;
 
+    // Stale artifacts from a previous run — above all a `.bcf`/`.bbl`
+    // left behind by a bib-backend switch — can mislead tool detection
+    // or be silently reused. Purge the family; the PDF and SyncTeX stay
+    // so a failed rebuild still leaves a consistent last-good preview.
+    purge_stale_artifacts(&outdir, &stem);
+
+    // The engine's own directory goes first on the child PATH so the
+    // helpers it needs (biber, bibtex, kpathsea) resolve next to it —
+    // a GUI process doesn't inherit the shell's PATH everywhere.
+    let env_path = engine.program.parent().map(toolchain::augmented_path);
+
     let output = if engine.name == "tectonic" {
         // Tectonic runs its own latexmk-style loop internally
         // (reruns, bibtex/biber) — one invocation. V1 single-file
         // mode: no -shell-escape equivalent exists, shell escape is
         // banned by design.
-        Command::new(&engine.program)
-            .arg("--keep-logs")
-            .arg("--synctex")
-            .arg("--outdir")
-            .arg(&outdir)
-            .arg(name.as_ref())
-            .current_dir(parent)
-            .output()?
+        let mut cmd = Command::new(&engine.program);
+        cmd.arg("--keep-logs").arg("--synctex").arg("--outdir").arg(&outdir).arg(name.as_ref()).current_dir(parent);
+        if let Some(p) = &env_path {
+            cmd.env("PATH", p);
+        }
+        cmd.output()?
     } else {
         // -output-directory is resolved relative to the process cwd, so
         // pass the bare name; cwd is set to the document directory below.
         // Never pass -shell-escape / -enable-write18: shell escape is
         // banned.
-        let run_engine = || -> Result<std::process::Output, EngineError> {
-            Ok(Command::new(&engine.program)
-                .arg("-interaction=nonstopmode")
+        let run_engine = |env_path: &Option<std::ffi::OsString>| -> Result<std::process::Output, EngineError> {
+            let mut cmd = Command::new(&engine.program);
+            cmd.arg("-interaction=nonstopmode")
                 .arg("-halt-on-error")
                 .arg("-file-line-error")
                 .arg("-synctex=1")
                 .arg(format!("-output-directory={BUILD_DIR}"))
                 .arg(name.as_ref())
-                .current_dir(parent)
-                .output()?)
+                .current_dir(parent);
+            if let Some(p) = env_path {
+                cmd.env("PATH", p);
+            }
+            Ok(cmd.output()?)
         };
 
-        let mut output = run_engine()?;
+        let mut output = run_engine(&env_path)?;
 
         // Bibliography + rerun passes, latexmk-style: driven by the
         // artifacts the first pass produced and by what the log asks
@@ -795,20 +923,25 @@ pub fn compile_file_with(path: &Path, src: Option<&str>, engine_override: Option
             if let Some(tool) = bib_tool {
                 // The aux/bcf live in the out dir; the .bib lives next
                 // to the source — BIBINPUTS/BSTINPUTS bridge the gap.
+                // The tool resolves next to the engine's bin dir first.
                 let abs_parent = std::path::absolute(parent)?;
                 let sep = if cfg!(windows) { ";" } else { ":" };
-                let _ = Command::new(tool)
-                    .arg(stem.as_ref())
+                let tool_path = toolchain::find_program(tool).unwrap_or_else(|| PathBuf::from(tool));
+                let mut tcmd = Command::new(&tool_path);
+                tcmd.arg(stem.as_ref())
                     .current_dir(&outdir)
                     .env("BIBINPUTS", format!("{}{sep}", abs_parent.display()))
-                    .env("BSTINPUTS", format!("{}{sep}", abs_parent.display()))
-                    .output();
-                output = run_engine()?;
+                    .env("BSTINPUTS", format!("{}{sep}", abs_parent.display()));
+                if let Some(p) = &env_path {
+                    tcmd.env("PATH", p);
+                }
+                let _ = tcmd.output();
+                output = run_engine(&env_path)?;
             }
             let log_path = outdir.join(format!("{stem}.log"));
             let mut passes = 0u32;
             while output.status.success() && passes < MAX_RERUNS && log_needs_rerun(&log_path) {
-                output = run_engine()?;
+                output = run_engine(&env_path)?;
                 passes += 1;
             }
         }
@@ -875,7 +1008,7 @@ fn parse_log(log: &str, base: &Path) -> (Vec<CompileError>, Vec<CompileError>, O
                     break;
                 }
             }
-            errors.push(CompileError { file: current_file, line: lineno, message: msg.trim().to_string() });
+            errors.push(CompileError::raw(current_file, lineno, msg.trim().to_string()));
             continue;
         }
 
@@ -885,12 +1018,12 @@ fn parse_log(log: &str, base: &Path) -> (Vec<CompileError>, Vec<CompileError>, O
             if errors.iter().any(|e: &CompileError| e.file.as_deref() == Some(file.as_path()) && e.line == Some(line_no)) {
                 continue;
             }
-            errors.push(CompileError { file: Some(file), line: Some(line_no), message: msg });
+            errors.push(CompileError::raw(Some(file), Some(line_no), msg));
             continue;
         }
 
         if let Some(msg) = line.strip_prefix("LaTeX Warning:") {
-            warnings.push(CompileError { file: current_file, line: input_line_number(msg), message: msg.trim().to_string() });
+            warnings.push(CompileError::raw(current_file, input_line_number(msg), msg.trim().to_string()));
             continue;
         }
 
@@ -901,6 +1034,7 @@ fn parse_log(log: &str, base: &Path) -> (Vec<CompileError>, Vec<CompileError>, O
             pages = joined.rsplit('(').next().and_then(|s| s.split_whitespace().next()).and_then(|n| n.parse::<u32>().ok());
         }
     }
+    logrules::enrich(&mut errors, &mut warnings);
     (errors, warnings, pages)
 }
 

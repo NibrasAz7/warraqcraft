@@ -52,6 +52,15 @@ const REF_CMDS: &[&str] = &["ref", "eqref", "pageref", "autoref", "cref", "Cref"
 /// Commands whose `{…}` arg completes bibliography keys — BibTeX and the
 /// common biblatex variants.
 const CITE_CMDS: &[&str] = &["cite", "parencite", "textcite", "citealp", "citeauthor", "citeyear", "nocite"];
+/// File-argument commands → which `files::Kind` they complete. `bib_base`
+/// means `\bibliography{…}` style: the stem, no `.bib` extension.
+const FILE_CMDS: &[(&str, files::Kind, bool)] = &[
+    ("includegraphics", files::Kind::Image, false),
+    ("input", files::Kind::Tex, false),
+    ("include", files::Kind::Tex, false),
+    ("bibliography", files::Kind::Bib, true),
+    ("addbibresource", files::Kind::Bib, false),
+];
 /// Symbol-palette commands, grouped like the palettes in desktop TeX editors.
 const SYMBOL_GREEK: &[&str] = &[
     "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "pi", "rho", "sigma", "tau",
@@ -94,6 +103,10 @@ struct Page {
 /// A finished compile job: the report plus rasterized page images.
 #[cfg(not(target_arch = "wasm32"))]
 type CompileJob = Result<(CompileReport, Vec<Page>), String>;
+
+/// A finished library-reader job: cite key plus rasterized pages.
+#[cfg(not(target_arch = "wasm32"))]
+type ReaderResult = Result<(String, Vec<Page>), String>;
 
 /// One template-gallery card, localized for the active UI language.
 #[cfg(not(target_arch = "wasm32"))]
@@ -460,6 +473,14 @@ pub struct WarraqApp {
     /// feeds inline `\cite{}` completion.
     #[cfg(not(target_arch = "wasm32"))]
     proj_bibs: Vec<cite::CiteEntry>,
+    /// Every file in the work dir as a project-relative forward-slash
+    /// path — feeds file-argument completion (`\includegraphics`,
+    /// `\input`, `\bibliography`, …). Refreshed with the tree; wasm has
+    /// no fs so it stays empty and the popup simply doesn't fire.
+    proj_paths: Vec<(String, files::Kind)>,
+    /// Merged snippet entries `(trigger, raw body, context)` refreshed
+    /// with the project pass — the completion popup expands at insert.
+    snippets: Vec<(String, String, String)>,
     /// Unresolved file deps the scan saw (missing `\input`, graphics, bibs).
     proj_missing: usize,
     proj_scanned_at: f64,
@@ -485,6 +506,20 @@ pub struct WarraqApp {
     new_entry: Option<NewEntry>,
     /// Insert-citation picker (`Ctrl+Shift+C` / top-bar button).
     cite: cite::CiteDialog,
+    /// A `cite.fetch` resolve is in flight on the worker channel.
+    #[cfg(not(target_arch = "wasm32"))]
+    cite_fetching: bool,
+    /// Reader mode: the preview shows a library-attached PDF under this
+    /// cite key instead of the compiled document.
+    #[cfg(not(target_arch = "wasm32"))]
+    reader_key: Option<String>,
+    /// Rasterized pages of the compiled document, held while the reader
+    /// borrows the preview — restored on close without recompiling.
+    #[cfg(not(target_arch = "wasm32"))]
+    saved_pages: Option<(Vec<egui::TextureHandle>, Vec<egui::Vec2>, usize)>,
+    /// In-flight rasterization of an attached PDF.
+    #[cfg(not(target_arch = "wasm32"))]
+    reader_rx: Option<std::sync::mpsc::Receiver<ReaderResult>>,
     /// `% !TeX`/`% !BIB` header directives of the buffer — reparsed
     /// with the structure pass so the status line can show the
     /// engine/root hint.
@@ -642,6 +677,8 @@ impl WarraqApp {
             proj_labels: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             proj_bibs: Vec::new(),
+            proj_paths: Vec::new(),
+            snippets: Vec::new(),
             proj_missing: 0,
             proj_scanned_at: f64::NEG_INFINITY,
             outline_open: true,
@@ -655,6 +692,14 @@ impl WarraqApp {
             engine_sel: None,
             new_entry: None,
             cite: cite::CiteDialog::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            cite_fetching: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            reader_key: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            saved_pages: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            reader_rx: None,
             magic: texparse::Magic::default(),
             complete: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -927,7 +972,28 @@ impl WarraqApp {
         match rx.try_recv() {
             Ok((command, Ok(v))) => {
                 self.repo_rx = None;
-                if command == "repo.status" {
+                if command == "cite.fetch" {
+                    self.cite_fetching = false;
+                    let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                    let key = v.get("key").and_then(|k| k.as_str()).map(str::to_string);
+                    match (status, key) {
+                        (_, Some(key)) => {
+                            let now = ctx.input(|i| i.time);
+                            self.insert_cite(&key, now);
+                            self.cite.close();
+                            self.status = match status {
+                                "existing" => lang::fmt(self.s().cite_fetch_existing, &[("key", &key)]),
+                                "unresolved" => lang::fmt(self.s().cite_fetch_pending, &[("key", &key)]),
+                                _ => lang::fmt(self.s().cite_fetch_added, &[("key", &key)]),
+                            };
+                            // A .bib was written — rescan tree + project.
+                            self.tree_scanned_at = f64::NEG_INFINITY;
+                            self.proj_scanned_at = f64::NEG_INFINITY;
+                        }
+                        _ => self.status = self.s().cite_fetch_invalid.into(),
+                    }
+                    ctx.request_repaint();
+                } else if command == "repo.status" {
                     self.repo_status = Some(repo_status_from_json(&v));
                 } else {
                     if command == "repo.remote" {
@@ -941,6 +1007,9 @@ impl WarraqApp {
             }
             Ok((command, Err(e))) => {
                 self.repo_rx = None;
+                if command == "cite.fetch" {
+                    self.cite_fetching = false;
+                }
                 if command == "repo.status" {
                     self.repo_status = None;
                 }
@@ -952,6 +1021,68 @@ impl WarraqApp {
                 self.status = self.s().status_tool_dead.into();
             }
         }
+    }
+
+    /// Open an attached PDF in the preview pane as a reader. The
+    /// compiled document's pages are stashed and restored on close.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_reader(&mut self, key: &str) {
+        if self.reader_rx.is_some() {
+            return;
+        }
+        let Ok(v) = self.session.execute("library.get", &serde_json::json!({"key": key})) else {
+            return;
+        };
+        let Some(pdf) = v.get("pdf").and_then(|p| p.as_str()).map(PathBuf::from) else {
+            self.status = self.s().status_failed.into();
+            return;
+        };
+        let key = key.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.reader_rx = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(render_pdf(&pdf).map(|pages| (key, pages)));
+        });
+    }
+
+    /// Drain the reader worker — rasterized pages swap into the preview.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_reader(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.reader_rx else { return };
+        match rx.try_recv() {
+            Ok(Ok((key, images))) => {
+                if self.saved_pages.is_none() {
+                    self.saved_pages = Some((std::mem::take(&mut self.pages), std::mem::take(&mut self.page_pts), self.page_idx));
+                }
+                self.page_pts = images.iter().map(|p| p.pt).collect();
+                self.pages = images
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, p)| ctx.load_texture(format!("reader-{i}"), p.img, egui::TextureOptions::LINEAR))
+                    .collect();
+                self.page_idx = 0;
+                self.reader_key = Some(key);
+                self.reader_rx = None;
+                ctx.request_repaint();
+            }
+            Ok(Err(e)) => {
+                self.status = e;
+                self.reader_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.reader_rx = None,
+        }
+    }
+
+    /// Close the reader — the stashed compiled pages come back.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn close_reader(&mut self) {
+        if let Some((pages, pts, idx)) = self.saved_pages.take() {
+            self.pages = pages;
+            self.page_pts = pts;
+            self.page_idx = idx;
+        }
+        self.reader_key = None;
     }
 
     /// Cheap mtime/length check for edits made outside the app. The
@@ -1461,6 +1592,51 @@ impl WarraqApp {
             }
             return;
         }
+        // File-argument commands inside an open arg — complete
+        // project-relative paths of the right kind. `\includegraphics[…]`
+        // skips the optional bracket; `\include` can't false-match
+        // `\includegraphics` because the next char must be `[` or `{`.
+        let file_prefix = FILE_CMDS
+            .iter()
+            .filter_map(|&(c, kind, stem_only)| {
+                let anchor = format!("\\{c}");
+                let p = back.rfind(&anchor)?;
+                let mut tail = back.get(p + anchor.len()..)?;
+                if let Some(rest) = tail.strip_prefix('[') {
+                    tail = rest.split_once(']')?.1;
+                }
+                let arg = tail.strip_prefix('{')?;
+                (arg.chars().all(|c| !matches!(c, '{' | '}' | '\n' | '\r'))).then(|| (arg.to_string(), kind, stem_only))
+            })
+            .max_by_key(|(a, _, _)| a.len());
+        if let Some((arg, kind, stem_only)) = file_prefix {
+            let items: Vec<CompletionItem> = self
+                .proj_paths
+                .iter()
+                .filter(|(_, k)| *k == kind)
+                .filter(|(p, _)| p.starts_with(arg.as_str()))
+                .take(8)
+                .map(|(p, k)| {
+                    let shown = if stem_only { p.strip_suffix(".bib").unwrap_or(p.as_str()) } else { p.as_str() };
+                    CompletionItem {
+                        name: shown.to_string(),
+                        sig: String::new(),
+                        meta: format!("{:?}", k).to_lowercase(),
+                        insert: shown.to_string(),
+                        caret_back: 0,
+                    }
+                })
+                .collect();
+            if items.is_empty() {
+                self.complete = None;
+            } else {
+                let start = ci - arg.chars().count();
+                let sel = self.complete.as_ref().map(|c| c.sel.min(items.len() - 1)).unwrap_or(0);
+                self.complete = Some(Completion { start, end: ci, env: true, items, sel });
+            }
+            return;
+        }
+
         // `\begin{` and `\end{` have different lengths — track which hit.
         let env_prefix =
             back.rfind("\\begin{").map(|p| p + "\\begin{".len()).or_else(|| back.rfind("\\end{").map(|p| p + "\\end{".len())).and_then(|w_start| {
@@ -1492,6 +1668,30 @@ impl WarraqApp {
                 self.complete = Some(Completion { start, end: ci, env: false, items, sel });
             }
             return;
+        }
+
+        // Bare-word snippet triggers (`fig`, `eq`, …) — the last word
+        // before the caret, filtered by math/text context.
+        let word: String =
+            back.chars().rev().take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect::<Vec<_>>().into_iter().rev().collect();
+        if word.len() >= 2 {
+            let in_math = mathprev::math_span(src, ci).is_some();
+            let items: Vec<CompletionItem> = self
+                .snippets
+                .iter()
+                .filter(|(t, _, ctx)| t.starts_with(word.as_str()) && (if in_math { ctx != "text" } else { ctx != "math" }))
+                .take(8)
+                .map(|(t, b, ctx)| {
+                    let (body, caret) = warraqcraft_engine::snippets::expand(b);
+                    CompletionItem { name: t.clone(), sig: String::new(), meta: ctx.clone(), insert: body.clone(), caret_back: body.len() - caret }
+                })
+                .collect();
+            if !items.is_empty() {
+                let start = ci - word.chars().count();
+                let sel = self.complete.as_ref().map(|c| c.sel.min(items.len() - 1)).unwrap_or(0);
+                self.complete = Some(Completion { start, end: ci, env: true, items, sel });
+                return;
+            }
         }
         self.complete = None;
     }
@@ -1633,6 +1833,13 @@ impl WarraqApp {
         let root = self.project_root();
         let expanded = &self.expanded;
         self.tree = files::scan(&root, &|p| expanded.contains(p));
+        // Full listing for file-argument completion — independent of
+        // which dirs are expanded in the sidebar.
+        self.proj_paths = files::scan(&root, &|_| true)
+            .iter()
+            .filter(|n| n.kind != files::Kind::Dir)
+            .filter_map(|n| n.path.strip_prefix(&root).ok().map(|rel| (rel.to_string_lossy().replace('\\', "/"), n.kind)))
+            .collect();
         // The "main document" marker: first .tex file that declares a
         // documentclass (bounded read), else the open file.
         self.main_file = None;
@@ -1729,6 +1936,24 @@ impl WarraqApp {
             cite::scan_bib_files(&paths, &mut self.proj_bibs, &mut Vec::new());
         }
         self.proj_missing = v["missing"].as_array().map_or(0, |m| m.len());
+        // Snippet triggers — builtins on wasm, project file merged on
+        // native; expanded at insert time.
+        if let Ok(v) = self.session.execute("snippet.list", &serde_json::json!({})) {
+            self.snippets = v["snippets"]
+                .as_array()
+                .map(|ss| {
+                    ss.iter()
+                        .filter_map(|s| {
+                            Some((
+                                s["trigger"].as_str()?.to_string(),
+                                s["body"].as_str()?.to_string(),
+                                s["context"].as_str().unwrap_or("any").to_string(),
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
     }
 
     /// Ctrl+click in the editor → SyncTeX forward: flash the matching box
@@ -2893,6 +3118,22 @@ impl WarraqApp {
                     {
                         self.export_pdf();
                     }
+                    // Reader mode: the pane shows an attached PDF — offer
+                    // a paged cite at the visible page, and a way back.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(key) = self.reader_key.clone() {
+                        ui.separator();
+                        ui.label(egui::RichText::new(format!("📖 {key}")).size(10.5).color(theme::pal().muted));
+                        let page = self.page_idx + 1;
+                        if ui.small_button(lang::fmt(s.reader_cite, &[("n", &page.to_string())])).clicked() {
+                            let now = ui.ctx().input(|i| i.time);
+                            self.insert_cite_paged(&key, page, now);
+                            self.close_reader();
+                        }
+                        if ui.small_button(lang::view(s.close)).clicked() {
+                            self.close_reader();
+                        }
+                    }
                 });
             });
             ui.separator();
@@ -3128,20 +3369,48 @@ impl WarraqApp {
                         let issues: Vec<_> = r
                             .errors
                             .iter()
-                            .map(|e| (e.file.clone(), e.line, e.message.clone(), true))
-                            .chain(r.warnings.iter().map(|w| (w.file.clone(), w.line, format!("{}: {}", s.warning_label, w.message), false)))
+                            .map(|e| (e.file.clone(), e.line, e.message.clone(), true, e.hint.clone(), e.package.clone(), e.cascade))
+                            .chain(r.warnings.iter().map(|w| {
+                                (
+                                    w.file.clone(),
+                                    w.line,
+                                    format!("{}: {}", s.warning_label, w.message),
+                                    false,
+                                    w.hint.clone(),
+                                    w.package.clone(),
+                                    w.cascade,
+                                )
+                            }))
                             .collect();
                         let log_tail = r.log_tail.clone();
                         let mut jump = None;
-                        for (file, line, message, is_error) in issues {
+                        for (file, line, message, is_error, hint, package, cascade) in issues {
                             let path = self.issue_path(file.as_deref());
                             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.untitled.into());
                             let msg = match line {
                                 Some(l) => format!("{name}:{l}  {message}"),
                                 None => format!("{name}  {message}"),
                             };
-                            let color = if is_error { theme::pal().error } else { theme::pal().warn };
+                            // Cascade rows dim — they're consequence noise
+                            // of an earlier diagnostic, not root causes.
+                            let color = if cascade {
+                                theme::pal().faint
+                            } else if is_error {
+                                theme::pal().error
+                            } else {
+                                theme::pal().warn
+                            };
+                            let tip = match (hint, package) {
+                                (Some(h), Some(p)) => Some(format!("{h}\n→ \\usepackage{{{p}}}")),
+                                (Some(h), None) => Some(h),
+                                (None, Some(p)) => Some(format!("→ \\usepackage{{{p}}}")),
+                                (None, None) => None,
+                            };
                             let resp = ui.selectable_label(false, egui::RichText::new(lang::view(&msg)).color(color).size(11.5));
+                            let resp = match tip {
+                                Some(t) => resp.on_hover_text(t),
+                                None => resp,
+                            };
                             if resp.clicked() {
                                 jump = Some((file, line));
                             }
@@ -3179,6 +3448,17 @@ impl WarraqApp {
             let (l, c) = self.cursor_lc;
             Some(char_index_of_lc(self.session.source(), l, c))
         });
+        #[cfg(not(target_arch = "wasm32"))]
+        self.refresh_library();
+    }
+
+    /// Fill the cite dialog's attachment markers from `library.list`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn refresh_library(&mut self) {
+        if let Ok(v) = self.session.execute("library.list", &serde_json::json!({})) {
+            self.cite.attached =
+                v["library"].as_array().map(|ls| ls.iter().filter_map(|e| e["key"].as_str().map(String::from)).collect()).unwrap_or_default();
+        }
     }
 
     /// Insert the picked key at the saved caret — `\cite{key}` at a
@@ -3196,6 +3476,26 @@ impl WarraqApp {
         self.src_stamp = self.src_stamp.wrapping_add(1);
         self.reparse();
         self.folded.clear(); // any edit invalidates folds
+        self.goto = Some(caret_b + ins.len());
+        self.last_edit = now;
+    }
+
+    /// Reader-mode cite: `\cite[p.~N]{key}` at the saved caret.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn insert_cite_paged(&mut self, key: &str, page: usize, now: f64) {
+        let mut src = self.session.source().to_string();
+        let caret_ci = self.cite.saved_caret.unwrap_or_else(|| {
+            let (l, c) = self.cursor_lc;
+            char_index_of_lc(&src, l, c)
+        });
+        let caret_b = byte_of_char(&src, caret_ci.min(src.chars().count()));
+        let ins = cite::insert_text_paged(&src, caret_b, key, page);
+        src.insert_str(caret_b, &ins);
+        self.mirrors = None;
+        self.session.set_source(src);
+        self.src_stamp = self.src_stamp.wrapping_add(1);
+        self.reparse();
+        self.folded.clear();
         self.goto = Some(caret_b + ins.len());
         self.last_edit = now;
     }
@@ -4971,7 +5271,13 @@ fn file_declares_document(path: &Path) -> bool {
 fn compile_and_render(path: &Path, engine: Option<&str>) -> CompileJob {
     let report = warraqcraft_engine::compile_file_with(path, None, engine).map_err(|e| e.to_string())?;
     let Some(pdf_path) = &report.pdf else { return Ok((report, Vec::new())) };
+    render_pdf(pdf_path).map(|images| (report, images))
+}
 
+/// Rasterize every page of a PDF into `ColorImage`s — shared by the
+/// compile preview and the library reader.
+#[cfg(not(target_arch = "wasm32"))]
+fn render_pdf(pdf_path: &Path) -> Result<Vec<Page>, String> {
     let data = std::fs::read(pdf_path).map_err(|e| format!("cannot read {}: {e}", pdf_path.display()))?;
     let pdf = hayro::hayro_syntax::Pdf::new(data).map_err(|e| format!("cannot parse PDF: {e:?}"))?;
 
@@ -4990,7 +5296,7 @@ fn compile_and_render(path: &Path, engine: Option<&str>) -> CompileJob {
             pt: egui::vec2(w, h),
         });
     }
-    Ok((report, images))
+    Ok(images)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -5134,6 +5440,7 @@ impl eframe::App for WarraqApp {
             self.poll_print();
             self.refresh_repo(ctx);
             self.poll_repo(ctx);
+            self.poll_reader(ctx);
             self.check_external_file(ctx);
             self.tick_autocompile(ctx);
             // Write prefs when the debounce has passed — wasm's store is
@@ -5211,6 +5518,27 @@ impl eframe::App for WarraqApp {
             self.ai_modal(&ctx);
             self.repo_modal(&ctx);
             self.external_modal(&ctx);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.cite.fetch_busy = self.cite_fetching;
+            if let Some(id) = self.cite.pending_fetch.take() {
+                self.cite_fetching = true;
+                self.start_repo_command("cite.fetch", serde_json::json!({"identifier": id}));
+            }
+            // Library actions on the selected row: attach a PDF, or open
+            // an attached one in the reader pane.
+            if let Some(key) = self.cite.pending_attach.take() {
+                if let Some(pdf) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file() {
+                    match self.session.execute("library.attach", &serde_json::json!({"key": key, "pdf": pdf.display().to_string()})) {
+                        Ok(_) => self.refresh_library(),
+                        Err(e) => self.status = e.to_string(),
+                    }
+                }
+            }
+            if let Some(key) = self.cite.pending_open.take() {
+                self.open_reader(&key);
+            }
         }
         if let Some(key) = self.cite.show(&ctx, theme::pal(), self.s()) {
             let now = ctx.input(|i| i.time);

@@ -192,8 +192,21 @@ pub fn permission(command: &str, params: &Value) -> Option<Permission> {
             Permission::new(Tier::Destructive, true, "replaces an existing memory scope")
         }
         "ai.memory.import" => Permission::new(Tier::FilesystemWrite, true, "writes persisted memory"),
+        "toolchain.probe" => Permission::new(Tier::ExternalProcess, false, "probes known tool binaries with --version"),
         "document.compile" | "math.preview" | "user_tool.run" | "repo.init" | "repo.remote" | "repo.pull" | "repo.push" | "repo.commit"
         | "repo.branches" => Permission::new(Tier::ExternalProcess, true, "starts a bounded external process"),
+        "bib.audit" => Permission::new(Tier::ReadOnly, false, "reads project .bib files"),
+        "doc.suggest" => Permission::new(Tier::BufferEdit, true, "registers a pending anchored edit proposal"),
+        "doc.suggest.list" => Permission::new(Tier::ReadOnly, false, "read-only inspection"),
+        "doc.suggest.apply" => Permission::new(Tier::BufferEdit, true, "applies an approved anchored edit to the buffer"),
+        "doc.suggest.reject" => Permission::new(Tier::BufferEdit, false, "drops a pending proposal"),
+        "snippet.list" | "snippet.expand" => Permission::new(Tier::ReadOnly, false, "reads built-in and project snippet files"),
+        "library.list" | "library.get" => Permission::new(Tier::ReadOnly, false, "reads the project library index"),
+        "library.attach" => Permission::new(Tier::FilesystemWrite, true, "copies a PDF into the project library"),
+        "library.detach" => Permission::new(Tier::FilesystemWrite, true, "removes a library attachment"),
+        "cite.fetch" => {
+            Permission::new(Tier::NetworkProvider, true, "contacts a public resolver (doi.org/crossref/arxiv/pubmed) and writes a .bib entry")
+        }
         "ai.probe" | "ai.ask" => Permission::new(Tier::NetworkProvider, true, "contacts a configured provider"),
         _ => return None,
     };
