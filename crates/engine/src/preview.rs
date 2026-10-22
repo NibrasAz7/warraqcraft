@@ -1,12 +1,17 @@
-//! `math.preview`: TeXstudio-style "preview selected math". A math
-//! fragment is wrapped in a minimal `article` preamble, written to a
-//! scratch file under `.warraqcraft/preview/` next to the document, and
-//! compiled through the same [`compile_file`] pipeline as
-//! `document.compile` — engine detection, tectonic preference,
-//! nonstop/halt-on-error flags, log parsing; shell escape stays off.
-//! The response carries the PDF path and page count; the UI
-//! rasterizes and caches it. Read-only for the session: the scratch
-//! file and build artifacts are the only filesystem effects.
+//! `math.preview`: TeXstudio-style "preview selected math". Two paths:
+//!
+//! * **Native** — when the fragment stays inside `typeset`'s math
+//!   subset (letters, digits, common symbols, scripts, `\frac`,
+//!   `\sqrt`) and a system serif TTF is found, the fragment is
+//!   typeset in-process and written as a real PDF through `texpdf`:
+//!   no external engine, instant, offline-safe. The response carries
+//!   `"native": true`.
+//! * **External** — anything else wraps in a minimal `article`
+//!   preamble and goes through [`compile_file`] exactly as
+//!   `document.compile` does.
+//!
+//! Both paths feed the same content-keyed warm cache, so repeat
+//! fragments skip their engine entirely.
 
 use std::path::{Path, PathBuf};
 
@@ -104,6 +109,15 @@ pub fn run(session: &Session, params: &Value) -> Result<Value, EngineError> {
         return Ok(json!({"pdf": built.display().to_string(), "pages": pages, "cached": true, "errors": [], "log": ""}));
     }
 
+    // Native path — the subset typesetter handles it without an engine.
+    if let Some(bytes) = native_pdf(latex) {
+        std::fs::create_dir_all(built.parent().unwrap_or(&dir))?;
+        craft_atomic::atomic_write(&built, &bytes)?;
+        let _ = craft_atomic::atomic_write(&okmark, b"1");
+        prune_warm(&dir);
+        return Ok(json!({"pdf": built.display().to_string(), "pages": 1, "cached": false, "native": true, "errors": [], "log": ""}));
+    }
+
     craft_atomic::atomic_write(&scratch, src.as_bytes())?;
 
     // `compile_file` builds into `<scratch-dir>/.warraqcraft/` — still
@@ -118,9 +132,136 @@ pub fn run(session: &Session, params: &Value) -> Result<Value, EngineError> {
         "pdf": report.pdf.as_ref().map(|p| p.display().to_string()),
         "pages": report.pages,
         "cached": false,
+        "native": false,
         "log": char_tail(&report.log_tail, MAX_LOG_CHARS),
         "errors": report.errors.iter().map(|e: &CompileError| json!({"line": e.line, "message": e.message})).collect::<Vec<_>>(),
     }))
+}
+
+// ---------- native typeset path ----------
+
+/// Serif TTF candidates for the native preview — first found wins.
+/// `WARRAQCRAFT_MATH_FONT` overrides (a `.ttf` path). Italic companions
+/// are tried alongside so `Style::Italic` gets a real italic face.
+#[cfg(not(target_arch = "wasm32"))]
+fn preview_fonts() -> Option<(texpdf::Ttf, Option<texpdf::Ttf>)> {
+    let regular = [
+        std::env::var("WARRAQCRAFT_MATH_FONT").unwrap_or_default(),
+        r"C:\Windows\Fonts\times.ttf".to_string(),
+        r"C:\Windows\Fonts\georgia.ttf".to_string(),
+        r"C:\Windows\Fonts\arial.ttf".to_string(),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf".to_string(),
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf".to_string(),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".to_string(),
+        "/System/Library/Fonts/Supplemental/Times New Roman.ttf".to_string(),
+        "/Library/Fonts/Georgia.ttf".to_string(),
+    ];
+    let italic = [
+        r"C:\Windows\Fonts\timesi.ttf",
+        r"C:\Windows\Fonts\georgiai.ttf",
+        r"C:\Windows\Fonts\ariali.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf",
+        "/System/Library/Fonts/Supplemental/Times New Roman Italic.ttf",
+    ];
+    let load = |p: &str| -> Option<texpdf::Ttf> { std::fs::read(p).ok().and_then(|b| texpdf::Ttf::parse(&b).ok()) };
+    let reg = regular.iter().filter(|p| !p.is_empty()).find_map(|p| load(p))?;
+    let it = italic.iter().find_map(|p| load(p));
+    Some((reg, it))
+}
+
+/// Strip the inline-math wrappers the preview accepts; `\begin{…}`
+/// blocks are never native.
+#[cfg(not(target_arch = "wasm32"))]
+fn bare_math(latex: &str) -> Option<&str> {
+    let t = latex.trim();
+    if t.starts_with("\\begin{") {
+        return None;
+    }
+    for (open, close) in [("$", "$"), ("\\(", "\\)"), ("\\[", "\\]")] {
+        if t.starts_with(open) && t.ends_with(close) && t.len() > open.len() + close.len() {
+            return t.get(open.len()..t.len() - close.len());
+        }
+    }
+    Some(t)
+}
+
+/// Typeset the fragment in-process and serialize a one-page PDF —
+/// `Some(bytes)` only when the source stays inside the supported
+/// subset and every glyph it needs exists in the font. Any miss falls
+/// back to the external engine; nothing here can panic on bad input.
+#[cfg(not(target_arch = "wasm32"))]
+fn native_pdf(latex: &str) -> Option<Vec<u8>> {
+    let body = bare_math(latex)?;
+    let (reg, ital) = preview_fonts()?;
+    let size = 14.0;
+    let ital_ref = ital.as_ref().unwrap_or(&reg);
+    let measure = |c: char, s: f64, st: typeset::Style| -> f64 {
+        match st {
+            typeset::Style::Italic => ital_ref.width_pt(c, s),
+            typeset::Style::Regular => reg.width_pt(c, s),
+        }
+    };
+    let frag = typeset::math(body, size, &measure)?;
+    // Every glyph must exist in its face — .notdef chars mean the
+    // fragment isn't faithfully representable; fall back instead.
+    for it in &frag.items {
+        if let typeset::Item::Text { text, style, .. } = it {
+            let f = match style {
+                typeset::Style::Italic => ital_ref,
+                typeset::Style::Regular => &reg,
+            };
+            if text.chars().any(|c| !c.is_whitespace() && f.gid(c) == 0) {
+                return None;
+            }
+        }
+    }
+
+    // Resolve glyph ids while the faces are still borrowable — the doc
+    // takes ownership when fonts are registered.
+    let use_italic = ital.is_some();
+    let mut uni1 = std::collections::BTreeMap::new();
+    let mut uni2 = std::collections::BTreeMap::new();
+    let mut runs: Vec<(&str, f64, f64, f64, Vec<u16>)> = Vec::new();
+    for it in &frag.items {
+        if let typeset::Item::Text { x, y, size, style, text } = it {
+            let (face, fname, m) = match style {
+                typeset::Style::Italic if use_italic => (ital_ref, "F2", &mut uni2),
+                _ => (&reg, "F1", &mut uni1),
+            };
+            let gids: Vec<u16> = text.chars().map(|c| face.gid(c)).collect();
+            for (i, c) in text.chars().enumerate() {
+                if let Some(g) = gids.get(i) {
+                    m.insert(*g, c);
+                }
+            }
+            runs.push((fname, *size, *x, *y, gids));
+        }
+    }
+
+    let margin = 10.0;
+    let mut doc = texpdf::Doc::new();
+    doc.font("F1", reg, uni1);
+    if let Some(it) = ital {
+        doc.font("F2", it, uni2);
+    }
+    let mut page = texpdf::Page::new(frag.width + margin * 2.0, frag.height + margin * 2.0);
+    for (fname, size, x, y, gids) in runs {
+        page.text(fname, size, x + margin, y + margin, gids);
+    }
+    for it in &frag.items {
+        if let typeset::Item::Rule { x, y, w, h } = it {
+            page.rule(*x + margin, *y + margin, *w, *h);
+        }
+    }
+    doc.add_page(page);
+    doc.save().ok()
+}
+
+/// The web build keeps the external path only — no font filesystem.
+#[cfg(target_arch = "wasm32")]
+fn native_pdf(_latex: &str) -> Option<Vec<u8>> {
+    None
 }
 
 #[cfg(test)]
@@ -186,27 +327,33 @@ mod tests {
         // names are content-keyed now.
         let h = frag_hash(wrap_fragment("x + y").as_bytes());
         let scratch = dir.0.join(crate::BUILD_DIR).join(PREVIEW_DIR).join(format!("p{h:016x}.tex"));
-        if crate::detect_engines().is_empty() {
-            // No engine: the scratch file is still written, then the
-            // compile step errors — never a panic.
-            assert!(s.execute("math.preview", &json!({"latex": "x + y"})).is_err());
-            assert!(scratch.is_file());
-            assert!(std::fs::read_to_string(&scratch).unwrap().contains("\\( x + y \\)"));
-            return;
+        let pdf = dir.0.join(crate::BUILD_DIR).join(PREVIEW_DIR).join(crate::BUILD_DIR).join(format!("p{h:016x}.pdf"));
+        let v = s.execute("math.preview", &json!({"latex": "x + y"}));
+        match v {
+            Ok(v) => {
+                if v["native"].as_bool() == Some(true) {
+                    // In-process typeset — a real PDF, no engine spawn.
+                    assert!(pdf.is_file(), "native pdf should be written: {v}");
+                    assert_eq!(v["pages"].as_u64(), Some(1), "{v}");
+                    return;
+                }
+                assert!(
+                    v["pdf"]
+                        .as_str()
+                        .is_some_and(|p| Path::new(p).file_name().is_some_and(|n| n.to_string_lossy().starts_with('p') && p.ends_with(".pdf"))),
+                    "{v}"
+                );
+                assert!(v["pages"].as_u64().unwrap_or(0) >= 1, "{v}");
+                assert!(v["errors"].as_array().is_some_and(Vec::is_empty), "{v}");
+                assert!(v["log"].as_str().is_none_or(|l| l.chars().count() <= MAX_LOG_CHARS));
+                assert!(scratch.is_file());
+            }
+            Err(_) => {
+                // No usable path at all: the scratch is still written
+                // before the external compile errors — never a panic.
+                assert!(scratch.is_file());
+                assert!(std::fs::read_to_string(&scratch).unwrap().contains("\\( x + y \\)"));
+            }
         }
-        // An installed engine can still fail here — e.g. tectonic's
-        // first-run bundle download on an offline box. Not a defect.
-        if let Ok(v) = s.execute("math.preview", &json!({"latex": "x + y"})) {
-            assert!(
-                v["pdf"]
-                    .as_str()
-                    .is_some_and(|p| Path::new(p).file_name().is_some_and(|n| n.to_string_lossy().starts_with('p') && p.ends_with(".pdf"))),
-                "{v}"
-            );
-            assert!(v["pages"].as_u64().unwrap_or(0) >= 1, "{v}");
-            assert!(v["errors"].as_array().is_some_and(Vec::is_empty), "{v}");
-            assert!(v["log"].as_str().is_none_or(|l| l.chars().count() <= MAX_LOG_CHARS));
-        }
-        assert!(scratch.is_file());
     }
 }

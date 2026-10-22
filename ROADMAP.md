@@ -316,3 +316,13 @@ widget) are tracked there — nothing in M0 depends on them.
   with tabstops), library-lite (PDF attachments per cite key + reader
   pane + `cite p.N`), and a content-hash warm cache for `math.preview`.
   All commands reachable identically from engine/CLI/control/MCP.
+- TASK-21 — `typeset`/`texpdf` landed (the reserved L1/L2 slots):
+  math-fragment typesetting in-process (appendix-G subset: scripts,
+  `\frac`, `\sqrt`, ~100 named symbols, Bin/Rel mu-spacing) plus a
+  minimal PDF writer with TrueType embedding (CIDFontType2 +
+  Identity-H + ToUnicode, metrics parsed from the font's own
+  cmap/hmtx — no width tables). `math.preview` goes native for
+  in-subset fragments (`"native": true`, no engine spawn, instant)
+  and falls back to the external compile for anything else; both
+  paths share the warm content-hash cache. Verified: emitted PDFs
+  parse in hayro-syntax (the preview pane's rasterizer).

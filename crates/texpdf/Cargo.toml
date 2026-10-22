@@ -1,0 +1,16 @@
+[package]
+name = "texpdf"
+description = "Minimal PDF writer for WarraqCraft — pages, content streams, embedded TrueType"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+# Round-trip check: our output must parse in a real PDF reader. Only
+# the syntax layer is needed — rendering is the UI's job.
+hayro-syntax = "0.8"

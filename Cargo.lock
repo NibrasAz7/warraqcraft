@@ -3532,6 +3532,13 @@ name = "texparse"
 version = "0.1.2"
 
 [[package]]
+name = "texpdf"
+version = "0.1.2"
+dependencies = [
+ "hayro-syntax",
+]
+
+[[package]]
 name = "texpkg"
 version = "0.1.2"
 
@@ -3756,6 +3763,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "typeset"
+version = "0.1.2"
+
+[[package]]
 name = "uds_windows"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3968,6 +3979,8 @@ dependencies = [
  "craft-atomic",
  "serde_json",
  "texparse",
+ "texpdf",
+ "typeset",
  "ureq",
 ]
 
