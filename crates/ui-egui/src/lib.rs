@@ -442,6 +442,13 @@ pub struct WarraqApp {
     tree: Vec<files::Node>,
     tree_scanned_at: f64,
     expanded: HashSet<PathBuf>,
+    /// Explicit working directory chosen via pick/paste/up — wins over
+    /// the open file's directory in `project_root()` until the next
+    /// `open_path` re-anchors it.
+    workdir: Option<PathBuf>,
+    /// Top-bar "go to path" inline edit state.
+    dir_edit: bool,
+    dir_text: String,
     main_file: Option<PathBuf>,
     /// Merged project structure (`project.structure`): every `.tex`
     /// reachable from the root, in graph order. Drives the outline and
@@ -627,6 +634,9 @@ impl WarraqApp {
             tree: Vec::new(),
             tree_scanned_at: f64::NEG_INFINITY,
             expanded: HashSet::new(),
+            workdir: None,
+            dir_edit: false,
+            dir_text: String::new(),
             main_file: None,
             proj_files: Vec::new(),
             proj_labels: Vec::new(),
@@ -1046,6 +1056,7 @@ impl WarraqApp {
                 self.external_checked_at = f64::NEG_INFINITY;
                 #[cfg(not(target_arch = "wasm32"))]
                 {
+                    self.workdir = path.parent().map(Path::to_path_buf);
                     self.repo_status = None;
                     self.repo_checked_at = f64::NEG_INFINITY;
                 }
@@ -1176,13 +1187,51 @@ impl WarraqApp {
         self.session.path().map(|p| p.display().to_string()).unwrap_or_else(|| "(untitled)".into())
     }
 
-    /// The project root: the open file's directory, else the cwd.
+    /// The project root: an explicitly chosen working directory wins,
+    /// then the open file's directory, else the cwd.
     fn project_root(&self) -> PathBuf {
-        self.session
-            .path()
-            .and_then(|p| p.parent().map(Path::to_path_buf))
+        self.workdir
+            .clone()
+            .or_else(|| self.session.path().and_then(|p| p.parent().map(Path::to_path_buf)))
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Point the project root at `dir` — rescan the tree and reset the
+    /// repo probe the same way a file switch does.
+    fn set_workdir(&mut self, dir: PathBuf) {
+        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        self.workdir = Some(dir.clone());
+        self.dir_edit = false;
+        self.dir_text.clear();
+        self.tree_scanned_at = f64::NEG_INFINITY;
+        self.proj_scanned_at = f64::NEG_INFINITY;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.repo_status = None;
+            self.repo_checked_at = f64::NEG_INFINITY;
+        }
+        self.status = lang::fmt(self.s().status_dir, &[("path", &dir.display().to_string())]);
+    }
+
+    /// Resolve a pasted/typed path: a directory becomes the working
+    /// directory, a file is opened directly, anything else is an error.
+    fn go_to_path(&mut self, text: &str) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            self.dir_edit = false;
+            return;
+        }
+        let p = PathBuf::from(trimmed);
+        if p.is_dir() {
+            self.set_workdir(p);
+        } else if p.is_file() {
+            self.dir_edit = false;
+            self.dir_text.clear();
+            self.open_path(p);
+        } else {
+            self.status = lang::fmt(self.s().status_no_dir, &[("path", trimmed)]);
+        }
     }
 
     /// Current UI language from prefs (unknown codes → English).
@@ -1969,7 +2018,65 @@ impl WarraqApp {
                     .and_then(|p| p.parent().and_then(|d| d.file_name()).map(|d| d.to_string_lossy().into_owned()))
                     .unwrap_or_else(|| s.untitled.into());
                 ui.label(egui::RichText::new(lang::view(&title).into_owned()).strong());
-                ui.label(egui::RichText::new(format!("~/…/{}", root.display())).small().color(theme::pal().muted));
+                if self.dir_edit {
+                    // Inline "go to path": paste or type a directory (or a
+                    // .tex file — it opens directly). Enter goes, Esc cancels.
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.dir_text)
+                            .desired_width(280.0f32.min(ui.available_width() * 0.5))
+                            .hint_text(lang::view(s.dir_edit_hint)),
+                    );
+                    if !resp.has_focus() {
+                        resp.request_focus();
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        let text = self.dir_text.clone();
+                        self.go_to_path(&text);
+                    } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        self.dir_edit = false;
+                        self.dir_text.clear();
+                    }
+                } else {
+                    let full = root.display().to_string();
+                    if ui
+                        .add(
+                            egui::Label::new(egui::RichText::new(format!("~/…/{full}")).small().color(theme::pal().muted))
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text(lang::fmt(s.dir_copy_hint, &[("path", &full)]))
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(full.clone());
+                        self.status = lang::fmt(self.s().status_copied, &[("text", &full)]);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        if icon_button_tinted(ui, 12.0, icons::copy, "", true, theme::pal().faint).on_hover_text(lang::view(s.dir_copy)).clicked() {
+                            ui.ctx().copy_text(full.clone());
+                            self.status = lang::fmt(self.s().status_copied, &[("text", &full)]);
+                        }
+                        if icon_button_tinted(ui, 12.0, icons::folder_open, "", true, theme::pal().faint)
+                            .on_hover_text(lang::view(s.dir_choose))
+                            .clicked()
+                        {
+                            if let Some(p) = rfd::FileDialog::new().set_directory(&root).pick_folder() {
+                                self.set_workdir(p);
+                            }
+                        }
+                        if icon_button_tinted(ui, 12.0, icons::dir_up, "", true, theme::pal().faint).on_hover_text(lang::view(s.dir_up)).clicked() {
+                            if let Some(parent) = root.parent().map(Path::to_path_buf) {
+                                self.set_workdir(parent);
+                            }
+                        }
+                        if icon_button_tinted(ui, 12.0, icons::pencil, "", true, theme::pal().faint)
+                            .on_hover_text(lang::view(s.dir_edit_tip))
+                            .clicked()
+                        {
+                            self.dir_edit = true;
+                            self.dir_text = full;
+                        }
+                    }
+                }
                 let (chip, chip_col) =
                     if self.session.dirty() { (s.unsaved_changes, theme::pal().warn) } else { (s.saved_locally, theme::pal().accent_dim) };
                 {
@@ -2779,6 +2886,7 @@ impl WarraqApp {
                     {
                         self.print_pdf();
                     }
+                    #[cfg(not(target_arch = "wasm32"))]
                     if icon_button(ui, 13.0, icons::export, "", self.pdf_path.is_some())
                         .on_hover_text(lang::view(s.export_hint).into_owned())
                         .clicked()

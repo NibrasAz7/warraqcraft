@@ -250,3 +250,52 @@ pub fn check(p: &Painter, r: Rect, col: Color32) {
         st(1.5, col),
     ));
 }
+
+/// Two overlapping pages (copy path to clipboard).
+pub fn copy(p: &Painter, r: Rect, col: Color32) {
+    let s = r.width().min(r.height());
+    let stroke = st(1.1, col);
+    let c = r.center();
+    // Back page, offset up-left.
+    let bw = s * 0.28;
+    let bh = s * 0.34;
+    let bx = c.x - s * 0.18;
+    let by = c.y - s * 0.14;
+    p.add(Shape::line(vec![pos2(bx - bw, by + bh), pos2(bx - bw, by - bh), pos2(bx + bw, by - bh), pos2(bx + bw, by + bh * 0.2)], stroke));
+    // Front page.
+    let fx = c.x + s * 0.1;
+    let fy = c.y + s * 0.12;
+    let fw = s * 0.3;
+    let fh = s * 0.36;
+    p.rect_stroke(Rect::from_center_size(pos2(fx, fy), vec2(fw * 2.0, fh * 2.0)).shrink(0.0), 1.0, stroke, StrokeKind::Inside);
+}
+
+/// Up arrow into a tray (parent directory).
+pub fn dir_up(p: &Painter, r: Rect, col: Color32) {
+    let s = r.width().min(r.height());
+    let stroke = st(1.3, col);
+    let c = r.center();
+    let x = c.x;
+    let top = c.y - s * 0.34;
+    let bot = c.y + s * 0.18;
+    p.add(Shape::line(vec![pos2(x, bot), pos2(x, top)], stroke));
+    p.add(Shape::line(vec![pos2(x - s * 0.22, top + s * 0.2), pos2(x, top), pos2(x + s * 0.22, top + s * 0.2)], stroke));
+    // Tray line.
+    p.add(Shape::line(vec![pos2(c.x - s * 0.34, bot + s * 0.14), pos2(c.x + s * 0.34, bot + s * 0.14)], stroke));
+}
+
+/// Pencil slashed over a baseline (edit the path).
+pub fn pencil(p: &Painter, r: Rect, col: Color32) {
+    let s = r.width().min(r.height());
+    let stroke = st(1.2, col);
+    let c = r.center();
+    let a = pos2(c.x - s * 0.32, c.y + s * 0.32);
+    let b = pos2(c.x + s * 0.28, c.y - s * 0.28);
+    p.add(Shape::line(vec![a, b], st(3.0, col)));
+    // Tip.
+    let d = (b - a).normalized();
+    let n = vec2(-d.y, d.x);
+    p.add(Shape::convex_polygon(vec![b + d * s * 0.14, b - n * s * 0.09, b + n * s * 0.09], col, Stroke::NONE));
+    // Baseline.
+    p.add(Shape::line(vec![pos2(c.x - s * 0.34, c.y + s * 0.4), pos2(c.x + s * 0.34, c.y + s * 0.4)], stroke));
+}
