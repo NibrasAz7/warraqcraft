@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WarraqCraft — local-first, LaTeX-compatible typesetting studio</title>
+<meta name="description" content="WarraqCraft is a local-first, LaTeX-compatible authoring studio. Edit, compile and preview PDFs entirely on your machine — 144 multilingual templates, bundled engine, AI-assisted repair. No account, no cloud.">
+<link rel="icon" type="image/svg+xml" href="logo.svg">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap">
+    <img src="logo.svg" alt="WarraqCraft nib logo">
+    <span class="word">Warraq<b>Craft</b></span>
+    <span class="spacer"></span>
+    <a class="link" href="#features">Features</a>
+    <a class="link" href="#languages">Languages</a>
+    <a class="link" href="#templates">Templates</a>
+    <a class="link" href="#ai">AI</a>
+    <a class="link" href="#download">Download</a>
+    <a class="btn ghost small" href="https://github.com/NibrasAz7/warraqcraft" target="_blank" rel="noopener">GitHub</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div>
+      <span class="kicker">Local-first · LaTeX-compatible · Open source</span>
+      <h1>Write. Typeset.<br><em>Keep it yours.</em></h1>
+      <p class="lede">
+        WarraqCraft is a desktop studio for LaTeX-class documents — the warraq's
+        desk, rebuilt in Rust. Compile real PDFs on your own machine, choose from
+        144 multilingual starter templates, and let a bounded, inspectable AI
+        harness repair your document. No account. No cloud. Ever.
+      </p>
+      <div class="cta">
+        <a class="btn gold" href="https://github.com/NibrasAz7/warraqcraft/releases/download/v0.1.2/warraqcraft-0.1.2-windows-x64-setup.exe">Download for Windows</a>
+        <a class="btn ghost" href="#download">All platforms</a>
+      </div>
+      <p class="meta">v0.1.2 · MIT OR Apache-2.0 · Windows, macOS, Linux · <code>warraqcraft-cli</code> included</p>
+    </div>
+
+    <div class="mock" aria-hidden="true">
+      <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <div class="panes">
+        <div class="side"><i class="a"></i><i class="b"></i><i class="c"></i><i class="d"></i><i></i><i></i></div>
+        <div class="editor">
+<span class="k">\documentclass</span>{article}<br>
+<span class="k">\usepackage</span>[ngerman]{babel}<br>
+<span class="c">% local-first. no cloud.</span><br>
+<span class="k">\begin</span>{document}<br>
+&nbsp;&nbsp;<span class="k">\section</span>{<span class="s">Introduction</span>}<br>
+&nbsp;&nbsp;Every claim here stays<br>
+&nbsp;&nbsp;on <span class="k">\emph</span>{your machine}.<br>
+<span class="k">\end</span>{document}
+        </div>
+        <div class="pdf">
+          <div class="title">Introduction</div>
+          <div class="ln"></div><div class="ln"></div><div class="ln short"></div>
+          <div class="ln"></div><div class="ln"></div><div class="ln"></div>
+          <div class="ln short"></div><div class="ln"></div><div class="ln"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="stats">
+  <div class="wrap">
+    <div class="stat"><div class="n">144</div><div class="l">starter templates</div></div>
+    <div class="stat"><div class="n">16</div><div class="l">document languages</div></div>
+    <div class="stat"><div class="n">61</div><div class="l">scriptable engine commands</div></div>
+    <div class="stat"><div class="n">0</div><div class="l">accounts required</div></div>
+  </div>
+</div>
+
+<section id="features">
+  <div class="wrap">
+    <h2>A desk, not a data pipeline</h2>
+    <p class="sub">Everything an authoring environment should do — done on your disk, under your control.</p>
+    <div class="grid">
+      <div class="card">
+        <div class="ic a">✒</div>
+        <h3>Real compiling, built in</h3>
+        <p>A bundled Tectonic engine produces real PDFs out of the box — no TeX Live install, no toolchain setup. Optional system-TeX if you already have one.</p>
+      </div>
+      <div class="card">
+        <div class="ic b">🗂</div>
+        <h3>144 multilingual templates</h3>
+        <p>Nine document classes — article, beamer, letter, report, book, thesis, CV, homework, poster — each localized into all 16 languages with the correct preamble and fonts.</p>
+      </div>
+      <div class="card">
+        <div class="ic c">⇄</div>
+        <h3>SyncTeX navigation</h3>
+        <p>Click a line in the source, land on the PDF page. Click the preview, jump back to the source. Round-trip navigation that just works.</p>
+      </div>
+      <div class="card">
+        <div class="ic a">🕰</div>
+        <h3>Local history</h3>
+        <p>Project snapshots, diffs and restores — version your document without a git server or a subscription.</p>
+      </div>
+      <div class="card">
+        <div class="ic b">⌗</div>
+        <h3>Fully scriptable</h3>
+        <p>Every engine function is a command: <code>warraqcraft-cli</code>, a TCP control channel into a running GUI, and a JSON-RPC MCP server for agents.</p>
+      </div>
+      <div class="card">
+        <div class="ic c">🔒</div>
+        <h3>Hostile-input safe</h3>
+        <p>Clean-room Rust, shell escape permanently off, bounded parsing of untrusted <code>.tex</code>/<code>.bib</code> — documents can't touch your system.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="langs" id="languages">
+  <div class="wrap">
+    <h2>Write in your language, not just English</h2>
+    <p class="sub">Each template ships the right preamble for its script — polyglossia + XeLaTeX for Arabic-script languages, ctex for Chinese, xeCJK for Japanese, koTeX for Korean — with localized headings and sample text.</p>
+    <div class="lang-grid">
+      <div class="lang-tile" dir="rtl" lang="ar"><span class="sample">مقال علمي</span><span class="cls">arabic · article</span></div>
+      <div class="lang-tile" lang="zh"><span class="sample">学术论文</span><span class="cls">chinese · article</span></div>
+      <div class="lang-tile" lang="ja"><span class="sample">学術論文</span><span class="cls">japanese · article</span></div>
+      <div class="lang-tile" lang="hi"><span class="sample">शैक्षणिक लेख</span><span class="cls">hindi · article</span></div>
+      <div class="lang-tile" dir="rtl" lang="fa"><span class="sample">مقاله دانشگاهی</span><span class="cls">persian · article</span></div>
+      <div class="lang-tile" dir="rtl" lang="ur"><span class="sample">علمی مقالہ</span><span class="cls">urdu · article</span></div>
+      <div class="lang-tile" lang="ko"><span class="sample">학술 논문</span><span class="cls">korean · article</span></div>
+      <div class="lang-tile" lang="ru"><span class="sample">Научная статья</span><span class="cls">russian · article</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="templates">
+  <div class="wrap">
+    <h2>Nine classes, sixteen languages, one gallery</h2>
+    <p class="sub">Filter by language and category; every card shows its engine, origin and file count. One click creates a project from any template.</p>
+    <div class="matrix">
+      <span class="pill">article / doc</span><span class="pill">beamer</span><span class="pill">letter</span>
+      <span class="pill">report</span><span class="pill">book</span><span class="pill">thesis</span>
+      <span class="pill">CV</span><span class="pill">homework</span><span class="pill">poster</span>
+      <span class="pill"><b>× 16 languages = 144 templates</b></span>
+    </div>
+  </div>
+</section>
+
+<section class="ai" id="ai">
+  <div class="wrap">
+    <h2>An AI harness you can inspect</h2>
+    <p class="sub">Not a chatbot glued to an editor — a bounded, auditable system. Every task is durable, every edit is previewed and approved, every run is logged.</p>
+    <div class="grid">
+      <div class="card">
+        <div class="ic a">🛠</div>
+        <h3>Bounded compile-repair</h3>
+        <p><code>ai.repair.preview</code> gathers structure and compile diagnostics into a minimal line-level plan; <code>ai.repair.apply</code> verifies anchors, patches, recompiles and records the outcome.</p>
+        <code class="block">$ warraqcraft-cli cmd ai.repair.preview --file main.tex</code>
+      </div>
+      <div class="card">
+        <div class="ic b">🧭</div>
+        <h3>Nothing hidden</h3>
+        <p>Prompts, guardrails, skills and memory scopes are versioned and inspectable via <code>ai.components</code>. A permission matrix decides what each command may touch.</p>
+        <code class="block">$ warraqcraft-cli cmd ai.components</code>
+      </div>
+      <div class="card">
+        <div class="ic c">✓</div>
+        <h3>Deterministic evaluations</h3>
+        <p>Six model-free fixtures — unclosed environments, nested strays, 500-deep hostile input — run in isolated workspaces and prove the repair path behaves.</p>
+        <code class="block">$ warraqcraft-cli cmd ai.eval.run</code>
+      </div>
+      <div class="card">
+        <div class="ic a">🔌</div>
+        <h3>Agent-ready</h3>
+        <p>All 61 engine commands are reachable identically from the GUI, CLI, TCP control channel and the MCP server — plug your own tools in.</p>
+        <code class="block">$ warraqcraft-cli mcp   # JSON-RPC over stdio</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="dl" id="download">
+  <div class="wrap">
+    <h2>Download</h2>
+    <p class="sub">v0.1.2 — every portable artifact bundles the Tectonic engine; the Debian package uses your system TeX by design.</p>
+    <table>
+      <tr><th>Platform</th><th>Package</th><th>Notes</th></tr>
+      <tr>
+        <td>Windows</td>
+        <td><code>warraqcraft-0.1.2-windows-x64-setup.exe</code></td>
+        <td><span class="tag">Recommended</span> — per-user installer, no admin, Start Menu + uninstaller</td>
+      </tr>
+      <tr>
+        <td>Windows</td>
+        <td><code>warraqcraft-0.1.2-windows-x64.zip</code></td>
+        <td>Portable — extract and run</td>
+      </tr>
+      <tr>
+        <td>macOS (Apple&nbsp;Silicon)</td>
+        <td><code>warraqcraft-0.1.2-macos-arm64.dmg</code></td>
+        <td>App bundle</td>
+      </tr>
+      <tr>
+        <td>macOS (Apple&nbsp;Silicon)</td>
+        <td><code>warraqcraft-0.1.2-macos-arm64.tar.gz</code></td>
+        <td>Portable</td>
+      </tr>
+      <tr>
+        <td>Linux</td>
+        <td><code>warraqcraft-0.1.2-linux-x86_64.tar.gz</code></td>
+        <td>Portable, bundled engine</td>
+      </tr>
+      <tr>
+        <td>Debian / Ubuntu</td>
+        <td><code>warraqcraft-0.1.2-linux-x86_64.deb</code></td>
+        <td>Uses system TeX</td>
+      </tr>
+    </table>
+    <p class="sub" style="margin-top:18px">
+      All releases, checksums and source:
+      <a href="https://github.com/NibrasAz7/warraqcraft/releases" target="_blank" rel="noopener">github.com/NibrasAz7/warraqcraft/releases</a>
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span class="brand"><img src="logo.svg" alt="">WarraqCraft</span>
+    <span class="spacer" style="flex:1"></span>
+    <a href="https://github.com/NibrasAz7/warraqcraft" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://github.com/NibrasAz7/warraqcraft/releases" target="_blank" rel="noopener">Releases</a>
+    <a href="https://github.com/NibrasAz7/warraqcraft/blob/main/AGENTS.md" target="_blank" rel="noopener">Contributing</a>
+    <p class="note">
+      WarraqCraft is a clean-room, open-source project — dual-licensed MIT / Apache-2.0.
+      The name honours the <em>warrāq</em> (ورّاق), the medieval papermaker and
+      stationer who kept the written word alive. Built in Rust; LaTeX-compatible;
+      documents never leave your machine.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

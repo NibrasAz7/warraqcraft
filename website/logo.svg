@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="WarraqCraft logo">
+  <!-- A geometric pen nib rising from a page corner. Original artwork. -->
+  <rect x="8" y="8" width="112" height="112" rx="24" fill="#17233B"/>
+  <!-- page corner, bottom-right -->
+  <path d="M96 84h16v20l-16 -6z" fill="none"/>
+  <path d="M28 92h48l16 12H28z" fill="#F6F1E7" opacity="0.18"/>
+  <!-- nib body -->
+  <path d="M64 22c14 14 22 30 22 44 0 16 -10 30 -22 38 -12 -8 -22 -22 -22 -38 0 -14 8 -30 22 -44z"
+        fill="#F6F1E7"/>
+  <!-- nib slit -->
+  <path d="M64 52v46" stroke="#17233B" stroke-width="5" stroke-linecap="round"/>
+  <!-- breather hole -->
+  <circle cx="64" cy="46" r="6.5" fill="#C99A2C"/>
+  <!-- gold accent stroke -->
+  <path d="M64 22c14 14 22 30 22 44" fill="none" stroke="#C99A2C" stroke-width="4" stroke-linecap="round" opacity="0.9"/>
+</svg>
