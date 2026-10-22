@@ -32,6 +32,7 @@ pub mod ai;
 pub mod ai_eval;
 pub mod ai_harness;
 pub mod ai_repair;
+pub mod bibimport;
 pub mod citefetch;
 pub mod history;
 pub mod library;
@@ -78,6 +79,7 @@ pub const COMMANDS: &[&str] = &[
     "toolchain.probe",
     "cite.fetch",
     "bib.audit",
+    "bib.import",
     "doc.suggest",
     "doc.suggest.list",
     "doc.suggest.apply",
@@ -603,6 +605,7 @@ impl Session {
             "toolchain.probe" => Ok(toolchain::probe_json(find_tectonic())),
             "cite.fetch" => citefetch::fetch(self, params),
             "bib.audit" => citefetch::audit(self),
+            "bib.import" => bibimport::import(self, params),
             "doc.suggest" => suggest::suggest(self, params),
             "doc.suggest.list" => suggest::list(self),
             "doc.suggest.apply" => suggest::apply(self, params),

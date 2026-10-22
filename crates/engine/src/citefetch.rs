@@ -222,7 +222,7 @@ fn rekey(entry_text: &str, key: &str) -> String {
 /// Returns the existing key so the UI can cite it instead of duplicating.
 #[cfg(not(target_arch = "wasm32"))]
 fn find_existing(sess: &Session, ident: &Ident) -> Option<String> {
-    let dir = sess.path().and_then(|p| p.parent().map(|d| d.to_path_buf()))?;
+    let dir = read_limited::project_dir(sess)?;
     let wanted = match ident {
         Ident::Doi(d) => d.clone(),
         Ident::Arxiv(a) => a.clone(),
@@ -276,7 +276,7 @@ fn pending_entry(ident: &Ident, key: &str) -> String {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn fetch(sess: &Session, params: &Value) -> Result<Value, EngineError> {
     let raw = params.get("identifier").and_then(Value::as_str).ok_or(EngineError::BadParam("identifier"))?;
-    let dir = sess.path().and_then(|p| p.parent().map(|d| d.to_path_buf())).ok_or(EngineError::NoFile)?;
+    let dir = read_limited::project_dir(sess).ok_or(EngineError::NoFile)?;
     let Some(ident) = parse_identifier(raw) else {
         return Ok(json!({"status": "invalid", "identifier": raw}));
     };
@@ -325,7 +325,7 @@ pub fn fetch(_sess: &Session, _params: &Value) -> Result<Value, EngineError> {
 /// author-year-word key.
 #[cfg(not(target_arch = "wasm32"))]
 fn unique_key(sess: &Session, base: &str) -> String {
-    let Some(dir) = sess.path().and_then(|p| p.parent().map(|d| d.to_path_buf())) else {
+    let Some(dir) = read_limited::project_dir(sess) else {
         return base.to_string();
     };
     let mut keys = std::collections::HashSet::new();
@@ -525,7 +525,7 @@ fn pmid_to_bibtex(body: &str, id: &str) -> Option<String> {
 /// by unresolved `cite.fetch` calls, and per-file parse issue counts.
 /// Everything is a report — no entry is ever rewritten or removed.
 pub fn audit(sess: &Session) -> Result<Value, EngineError> {
-    let Some(dir) = sess.path().and_then(|p| p.parent().map(|d| d.to_path_buf())) else {
+    let Some(dir) = read_limited::project_dir(sess) else {
         return Err(EngineError::NoFile);
     };
     let mut dups: Vec<Value> = Vec::new();
@@ -590,6 +590,19 @@ pub fn audit(_sess: &Session) -> Result<Value, EngineError> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod read_limited {
     use std::path::{Path, PathBuf};
+
+    /// The project dir for a session — the open file's parent, or the
+    /// process working dir when the file was opened with a bare
+    /// relative name (`parent()` of `main.tex` is `""`, which no
+    /// `read_dir` accepts).
+    pub fn project_dir(sess: &crate::Session) -> Option<PathBuf> {
+        let p = sess.path()?;
+        match p.parent() {
+            Some(d) if !d.as_os_str().is_empty() => Some(d.to_path_buf()),
+            Some(_) => Some(PathBuf::from(".")),
+            None => None,
+        }
+    }
 
     /// `.bib` files directly inside `dir` — bounded, top-level only.
     pub fn bib_files(dir: &Path) -> Vec<PathBuf> {

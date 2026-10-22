@@ -86,6 +86,7 @@ const TOOL_COMMANDS: &[(&str, &str)] = &[
     ("toolchain_probe", "toolchain.probe"),
     ("cite_fetch", "cite.fetch"),
     ("bib_audit", "bib.audit"),
+    ("bib_import", "bib.import"),
     ("doc_suggest", "doc.suggest"),
     ("doc_suggest_list", "doc.suggest.list"),
     ("doc_suggest_apply", "doc.suggest.apply"),
@@ -649,6 +650,18 @@ fn tool_list() -> Vec<Value> {
             json!({}),
             &[],
             true,
+            false,
+        ),
+        tool(
+            "bib_import",
+            "Import an external bibliography export (CSL-JSON from Zotero/Better BibTeX, or RIS) into a project .bib file. Format is sniffed from content; entries are converted to BibTeX, deduplicated by DOI/eprint/normalized title, and appended with generated unique keys.",
+            json!({
+                "path": s("Source file to read — project-relative or absolute."),
+                "data": s("Raw CSL-JSON/RIS text — alternative to path (e.g. piped content)."),
+                "bib": s("Optional project-relative .bib filename to write into (default: first declared bibliography, else refs.bib)."),
+            }),
+            &[],
+            false,
             false,
         ),
         tool(

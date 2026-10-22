@@ -92,6 +92,11 @@ pub struct CiteDialog {
     /// The selected key asked to open its attached PDF — the app shows
     /// it in the reader pane.
     pub pending_open: Option<String>,
+    /// A CSL-JSON/RIS file picked for `bib.import` — the app dispatches
+    /// it on the worker so parsing stays off the UI thread.
+    pub pending_import: Option<PathBuf>,
+    /// Set by the app while `bib.import` runs — the row shows busy.
+    pub import_busy: bool,
 }
 
 impl CiteDialog {
@@ -114,6 +119,16 @@ impl CiteDialog {
     /// resolved key is inserted.
     pub fn close(&mut self) {
         self.open = false;
+    }
+
+    /// Rescan the `.bib` files keeping filter and selection — used after
+    /// `bib.import` writes new entries while the dialog stays open.
+    pub fn reload(&mut self, root: &Path) {
+        let keep_sel = self.sel;
+        self.entries.clear();
+        self.issues.clear();
+        self.scan(root);
+        self.sel = keep_sel;
     }
 
     /// `.bib` files in `root` and its immediate subdirectories.
@@ -312,6 +327,18 @@ impl CiteDialog {
                                 self.pending_fetch = Some(id);
                                 self.fetch_text.clear();
                             }
+                        }
+                        // Reference-manager export → .bib (CSL-JSON/RIS).
+                        let imp = ui
+                            .add_enabled(!self.import_busy, egui::Button::new(lang::view(s.cite_import)).small())
+                            .on_hover_text(lang::view(s.cite_import_hint));
+                        if imp.clicked() {
+                            if let Some(p) = rfd::FileDialog::new().add_filter("references", &["json", "ris"]).pick_file() {
+                                self.pending_import = Some(p);
+                            }
+                        }
+                        if self.import_busy {
+                            ui.label(egui::RichText::new(lang::view(s.cite_import_busy)).size(10.0).color(pal.muted));
                         }
                     });
                 }

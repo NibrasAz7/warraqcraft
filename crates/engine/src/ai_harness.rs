@@ -196,6 +196,7 @@ pub fn permission(command: &str, params: &Value) -> Option<Permission> {
         "document.compile" | "math.preview" | "user_tool.run" | "repo.init" | "repo.remote" | "repo.pull" | "repo.push" | "repo.commit"
         | "repo.branches" => Permission::new(Tier::ExternalProcess, true, "starts a bounded external process"),
         "bib.audit" => Permission::new(Tier::ReadOnly, false, "reads project .bib files"),
+        "bib.import" => Permission::new(Tier::FilesystemWrite, true, "appends converted entries to a project .bib file"),
         "doc.suggest" => Permission::new(Tier::BufferEdit, true, "registers a pending anchored edit proposal"),
         "doc.suggest.list" => Permission::new(Tier::ReadOnly, false, "read-only inspection"),
         "doc.suggest.apply" => Permission::new(Tier::BufferEdit, true, "applies an approved anchored edit to the buffer"),

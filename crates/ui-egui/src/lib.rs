@@ -509,6 +509,9 @@ pub struct WarraqApp {
     /// A `cite.fetch` resolve is in flight on the worker channel.
     #[cfg(not(target_arch = "wasm32"))]
     cite_fetching: bool,
+    /// A `bib.import` run is in flight on the worker channel.
+    #[cfg(not(target_arch = "wasm32"))]
+    cite_importing: bool,
     /// Reader mode: the preview shows a library-attached PDF under this
     /// cite key instead of the compiled document.
     #[cfg(not(target_arch = "wasm32"))]
@@ -694,6 +697,8 @@ impl WarraqApp {
             cite: cite::CiteDialog::default(),
             #[cfg(not(target_arch = "wasm32"))]
             cite_fetching: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            cite_importing: false,
             #[cfg(not(target_arch = "wasm32"))]
             reader_key: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -993,6 +998,17 @@ impl WarraqApp {
                         _ => self.status = self.s().cite_fetch_invalid.into(),
                     }
                     ctx.request_repaint();
+                } else if command == "bib.import" {
+                    self.cite_importing = false;
+                    let n = v.get("imported").and_then(|x| x.as_u64()).unwrap_or(0);
+                    let d = v.get("duplicates").and_then(|x| x.as_u64()).unwrap_or(0);
+                    self.status = lang::fmt(self.s().cite_import_done, &[("n", &n.to_string()), ("d", &d.to_string())]);
+                    // New entries — the picker and the tree rescan.
+                    let root = self.project_root();
+                    self.cite.reload(&root);
+                    self.tree_scanned_at = f64::NEG_INFINITY;
+                    self.proj_scanned_at = f64::NEG_INFINITY;
+                    ctx.request_repaint();
                 } else if command == "repo.status" {
                     self.repo_status = Some(repo_status_from_json(&v));
                 } else {
@@ -1009,6 +1025,9 @@ impl WarraqApp {
                 self.repo_rx = None;
                 if command == "cite.fetch" {
                     self.cite_fetching = false;
+                }
+                if command == "bib.import" {
+                    self.cite_importing = false;
                 }
                 if command == "repo.status" {
                     self.repo_status = None;
@@ -5522,9 +5541,14 @@ impl eframe::App for WarraqApp {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.cite.fetch_busy = self.cite_fetching;
+            self.cite.import_busy = self.cite_importing;
             if let Some(id) = self.cite.pending_fetch.take() {
                 self.cite_fetching = true;
                 self.start_repo_command("cite.fetch", serde_json::json!({"identifier": id}));
+            }
+            if let Some(path) = self.cite.pending_import.take() {
+                self.cite_importing = true;
+                self.start_repo_command("bib.import", serde_json::json!({"path": path.display().to_string()}));
             }
             // Library actions on the selected row: attach a PDF, or open
             // an attached one in the reader pane.
