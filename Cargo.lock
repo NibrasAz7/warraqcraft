@@ -3529,11 +3529,11 @@ dependencies = [
 
 [[package]]
 name = "texparse"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "texpkg"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "thiserror"
@@ -3943,7 +3943,7 @@ dependencies = [
 
 [[package]]
 name = "warraqcraft"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "eframe",
  "egui",
@@ -3952,7 +3952,7 @@ dependencies = [
 
 [[package]]
 name = "warraqcraft-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde_json",
  "texparse",
@@ -3962,7 +3962,7 @@ dependencies = [
 
 [[package]]
 name = "warraqcraft-engine"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "craft-ai",
  "craft-atomic",
@@ -3972,7 +3972,7 @@ dependencies = [
 
 [[package]]
 name = "warraqcraft-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde_json",
  "warraqcraft-engine",
@@ -3980,7 +3980,7 @@ dependencies = [
 
 [[package]]
 name = "warraqcraft-ui-egui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "craft-ai",
  "craft-atomic",
@@ -4885,7 +4885,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "yoke"
