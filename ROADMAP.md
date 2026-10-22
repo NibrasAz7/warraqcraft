@@ -306,3 +306,13 @@ widget) are tracked there — nothing in M0 depends on them.
     `macos-latest` launches the built `.app` and requires a live control
     channel — the first real macOS runtime gate, verified on the next
     tagged release or `workflow_dispatch` run.
+- TASK-19 — REA-informed feature batch (OpenBib/Texpile/research-dome
+  recon): `cite.fetch` (lenient DOI/arXiv/PMID → keyless .bib entry),
+  `toolchain.probe` + engine discovery beyond PATH with helper-PATH
+  prepend, log→Problems rule table (hints, suggested packages, cascade
+  dimming), pre-build aux purge keeping last-good PDF, file-arg
+  completions, `bib.audit` dup detection, `doc.suggest`
+  TextQuoteSelector-anchored edits, snippets (project/global/built-in
+  with tabstops), library-lite (PDF attachments per cite key + reader
+  pane + `cite p.N`), and a content-hash warm cache for `math.preview`.
+  All commands reachable identically from engine/CLI/control/MCP.
