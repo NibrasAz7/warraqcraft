@@ -570,6 +570,9 @@ pub fn math(src: &str, size: f64, measure: &dyn Fn(char, f64, Style) -> f64) -> 
 pub enum Block {
     Line(Fragment),
     Gap(f64),
+    /// A footnote — stacked at the bottom of the page where the
+    /// reference appeared (real `\footnote` semantics).
+    Note(Vec<Block>),
 }
 
 /// One horizontal unit inside a paragraph.
@@ -586,7 +589,11 @@ enum Unit {
     /// First-line paragraph indent — rigid space, not glue.
     Indent(f64),
     /// `\item` boundary — ends the segment and carries its marker.
-    Item(String),
+    /// `marker: None` is a continuation paragraph inside an item;
+    /// `depth` is the list nesting level for hang width.
+    Item { marker: Option<String>, depth: u32 },
+    /// Raised marker text — footnote reference numbers.
+    Sup(String),
 }
 
 /// A parse event: inline content, a paragraph boundary, or a heading.
@@ -594,6 +601,14 @@ enum Ev {
     Unit(Unit),
     Par,
     Heading(Vec<Unit>, f64),
+    /// A footnote body — emitted at page bottom by the caller.
+    Note(Vec<Unit>),
+    /// Display math — a standalone centered block.
+    Math(Fragment),
+    /// `\maketitle` — emits stored title/author/date.
+    Maketitle,
+    /// `\title`/`\author`/`\date` — stored until `\maketitle`.
+    Meta(usize, Vec<Unit>),
 }
 
 const MAX_DOC: usize = 512 * 1024;
@@ -695,6 +710,7 @@ fn stream(
     let mut evs: Vec<Ev> = Vec::new();
     let mut units: Vec<Unit> = Vec::new();
     let mut lists: Vec<ListSt> = Vec::new();
+    let mut note_n: u32 = 0;
     let mut i = pos;
     while i < chars.len() {
         if units.len() > MAX_UNITS {
@@ -733,6 +749,11 @@ fn stream(
                 if top && blank && units.iter().any(|u| !matches!(u, Unit::Glue { .. } | Unit::Break)) {
                     evs.extend(units.drain(..).map(Ev::Unit));
                     evs.push(Ev::Par);
+                    // A paragraph break inside a list continues the
+                    // current item — carry the hanging indent forward.
+                    if !lists.is_empty() {
+                        units.push(Unit::Item { marker: None, depth: lists.len() as u32 });
+                    }
                     i = j + 1;
                 } else {
                     push_glue(&mut units, true);
@@ -752,16 +773,34 @@ fn stream(
                 break;
             }
             '$' => {
-                let mut j = i + 1;
-                while j < chars.len() && chars[j] != '$' && j - i <= 4096 {
-                    j += 1;
+                if top && chars.get(i + 1) == Some(&'$') {
+                    // $$…$$ — display math, a standalone centered block.
+                    let mut j = i + 2;
+                    while j + 1 < chars.len() && !(chars[j] == '$' && chars[j + 1] == '$') && j - i <= 8192 {
+                        j += 1;
+                    }
+                    if !(j + 1 < chars.len() && chars[j] == '$' && chars[j + 1] == '$') {
+                        return None;
+                    }
+                    let inner: String = chars[i + 2..j].iter().collect();
+                    if units.iter().any(|u| !matches!(u, Unit::Glue { .. } | Unit::Break)) {
+                        evs.extend(units.drain(..).map(Ev::Unit));
+                        evs.push(Ev::Par);
+                    }
+                    evs.push(Ev::Math(math(&inner, size, measure)?));
+                    i = j + 2;
+                } else {
+                    let mut j = i + 1;
+                    while j < chars.len() && chars[j] != '$' && j - i <= 4096 {
+                        j += 1;
+                    }
+                    if chars.get(j) != Some(&'$') {
+                        return None;
+                    }
+                    let inner: String = chars[i + 1..j].iter().collect();
+                    units.push(Unit::Math(math(&inner, size, measure)?));
+                    i = j + 1;
                 }
-                if chars.get(j) != Some(&'$') {
-                    return None;
-                }
-                let inner: String = chars[i + 1..j].iter().collect();
-                units.push(Unit::Math(math(&inner, size, measure)?));
-                i = j + 1;
             }
             '\\' => {
                 i += 1;
@@ -777,6 +816,23 @@ fn stream(
                         ' ' | '~' => push_glue(&mut units, false),
                         '&' | '%' | '$' | '#' | '_' | '{' | '}' => push_char(&mut units, sym, Style::Regular),
                         ',' | ';' | ':' | '!' => push_glue(&mut units, false),
+                        // \[…\] — display math at document level.
+                        '[' if top => {
+                            let mut j = i;
+                            while j + 1 < chars.len() && !(chars[j] == '\\' && chars[j + 1] == ']') && j - i <= 8192 {
+                                j += 1;
+                            }
+                            if !(j + 1 < chars.len() && chars[j] == '\\' && chars[j + 1] == ']') {
+                                return None;
+                            }
+                            let inner: String = chars[i..j].iter().collect();
+                            if units.iter().any(|u| !matches!(u, Unit::Glue { .. } | Unit::Break)) {
+                                evs.extend(units.drain(..).map(Ev::Unit));
+                                evs.push(Ev::Par);
+                            }
+                            evs.push(Ev::Math(math(&inner, size, measure)?));
+                            i = j + 2;
+                        }
                         _ => return None,
                     }
                     continue;
@@ -787,6 +843,9 @@ fn stream(
                         if units.iter().any(|u| !matches!(u, Unit::Glue { .. } | Unit::Break)) {
                             evs.extend(units.drain(..).map(Ev::Unit));
                             evs.push(Ev::Par);
+                            if !lists.is_empty() {
+                                units.push(Unit::Item { marker: None, depth: lists.len() as u32 });
+                            }
                         }
                     }
                     "section" | "subsection" | "subsubsection" if top => {
@@ -856,6 +915,30 @@ fn stream(
                         match env.as_str() {
                             "itemize" | "description" => lists.push(ListSt { ordered: false, n: 0 }),
                             "enumerate" => lists.push(ListSt { ordered: true, n: 0 }),
+                            // Display-math environments — the body goes
+                            // through the math layout, centered as a block.
+                            "equation" | "equation*" | "displaymath" | "math" => {
+                                let needle: Vec<char> = format!("\\end{{{env}}}").chars().collect();
+                                let start = i;
+                                let lim = (i + 8192).min(chars.len());
+                                let mut j = i;
+                                let mut found = None;
+                                while j + needle.len() <= lim {
+                                    if chars[j..j + needle.len()] == needle[..] {
+                                        found = Some(j);
+                                        break;
+                                    }
+                                    j += 1;
+                                }
+                                let e = found?;
+                                if units.iter().any(|u| !matches!(u, Unit::Glue { .. } | Unit::Break)) {
+                                    evs.extend(units.drain(..).map(Ev::Unit));
+                                    evs.push(Ev::Par);
+                                }
+                                let inner: String = chars[start..e].iter().collect();
+                                evs.push(Ev::Math(math(&inner, size, measure)?));
+                                i = e + needle.len();
+                            }
                             _ => return None,
                         }
                     }
@@ -888,7 +971,43 @@ fn stream(
                                 i = j + 1;
                             }
                         }
-                        units.push(Unit::Item(marker));
+                        units.push(Unit::Item { marker: Some(marker), depth: lists.len() as u32 });
+                    }
+                    "footnote" if top => {
+                        note_n += 1;
+                        let mut inner = braced_units(chars, &mut i, size, measure, depth)?;
+                        inner.insert(0, Unit::Sup(note_n.to_string()));
+                        inner.insert(1, Unit::Glue { breakable: false });
+                        // The raised reference number stays in the
+                        // paragraph; the body becomes a Note event at
+                        // this point in the stream.
+                        units.push(Unit::Sup(note_n.to_string()));
+                        evs.extend(units.drain(..).map(Ev::Unit));
+                        evs.push(Ev::Note(inner));
+                    }
+                    "maketitle" if top => {
+                        if units.iter().any(|u| !matches!(u, Unit::Glue { .. } | Unit::Break)) {
+                            evs.extend(units.drain(..).map(Ev::Unit));
+                            evs.push(Ev::Par);
+                        }
+                        evs.push(Ev::Maketitle);
+                    }
+                    "title" | "author" | "date" if top => {
+                        let us = braced_units(chars, &mut i, size, measure, depth)?;
+                        let idx = if name == "title" {
+                            0
+                        } else if name == "author" {
+                            1
+                        } else {
+                            2
+                        };
+                        evs.push(Ev::Meta(idx, us));
+                    }
+                    // \and separates authors inside \author.
+                    "and" => {
+                        push_glue(&mut units, true);
+                        push_char(&mut units, '—', Style::Regular);
+                        push_glue(&mut units, true);
                     }
                     _ => return None,
                 }
@@ -915,7 +1034,8 @@ fn unit_w(u: &Unit, size: f64, space_w: f64, measure: &dyn Fn(char, f64, Style) 
         Unit::Math(f) => f.width,
         Unit::Glue { .. } => space_w,
         Unit::Indent(v) => *v,
-        Unit::Break | Unit::Item(_) => 0.0,
+        Unit::Sup(t) => t.chars().map(|c| measure(c, size * 0.65, Style::Regular)).sum(),
+        Unit::Break | Unit::Item { .. } => 0.0,
     }
 }
 
@@ -1109,8 +1229,15 @@ fn emit_line(seg: &[Unit], s: usize, ce: usize, cfg: &ParaCfg, justify: bool, ma
                 lay.bottom = lay.bottom.min(-f.baseline);
                 lay.x = x0 + f.width;
             }
+            Unit::Sup(t) => {
+                let ss = size * 0.65;
+                let w: f64 = t.chars().map(|c| measure(c, ss, Style::Regular)).sum();
+                lay.items.push(Item::Text { x: lay.x, y: size * 0.35, size: ss, style: Style::Regular, text: t.clone() });
+                lay.top = lay.top.max(size * 0.35 + ss * 0.75);
+                lay.x += w;
+            }
             Unit::Glue { .. } => lay.x += space_w + extra,
-            Unit::Break | Unit::Item(_) => {}
+            Unit::Break | Unit::Item { .. } => {}
         }
     }
     Fragment { items: lay.items, width: lay.x, height: lay.top.max(size * 0.7), depth: -lay.bottom.min(0.0), baseline: 0.0 }
@@ -1129,7 +1256,7 @@ fn emit_para(units: &mut Vec<Unit>, out: &mut Vec<Block>, cfg: &ParaCfg) {
     let mut hang = 0.0;
     let mut marker: Option<String> = None;
     for k in 0..=units.len() {
-        if k == units.len() || matches!(units[k], Unit::Break | Unit::Item(_)) {
+        if k == units.len() || matches!(units[k], Unit::Break | Unit::Item { .. }) {
             let mut a = seg_start;
             let mut b = k;
             while a < b && matches!(units[a], Unit::Glue { .. }) {
@@ -1147,9 +1274,9 @@ fn emit_para(units: &mut Vec<Unit>, out: &mut Vec<Block>, cfg: &ParaCfg) {
                 }
             }
             seg_start = k + 1;
-            if let Some(Unit::Item(m)) = units.get(k) {
-                hang = cfg.size * 2.0;
-                marker = Some(m.clone());
+            if let Some(Unit::Item { marker: m, depth: d }) = units.get(k) {
+                hang = cfg.size * 2.0 * (*d as f64);
+                marker = m.clone();
             }
         }
     }
@@ -1159,27 +1286,95 @@ fn emit_para(units: &mut Vec<Unit>, out: &mut Vec<Block>, cfg: &ParaCfg) {
     }
 }
 
+/// Find `\cmd{…}` in a char stream and return the raw brace contents —
+/// used for `\title`/`\author`/`\date` captured by `\maketitle`.
+fn meta_arg(pre: &[char], cmd: &str) -> Option<String> {
+    let needle: Vec<char> = format!("\\{cmd}").chars().collect();
+    let mut from = 0usize;
+    while from + needle.len() < pre.len() {
+        let i = from + pre.get(from..)?.windows(needle.len()).position(|w| *w == needle[..])?;
+        // \title must not match a prefix of \titlepage etc.
+        if matches!(pre.get(i + needle.len()), Some(c) if c.is_ascii_alphabetic()) {
+            from = i + needle.len();
+            continue;
+        }
+        let mut j = i + needle.len();
+        while j < pre.len() && matches!(pre[j], ' ' | '\t' | '\n' | '\r') {
+            j += 1;
+        }
+        if pre.get(j) != Some(&'{') {
+            from = i + needle.len();
+            continue;
+        }
+        let mut d = 0i32;
+        let mut k = j;
+        while k < pre.len() && k - j <= 4096 {
+            match pre[k] {
+                '\\' => k += 1,
+                '{' => d += 1,
+                '}' => {
+                    d -= 1;
+                    if d == 0 {
+                        return Some(pre[j + 1..k].iter().collect());
+                    }
+                }
+                _ => {}
+            }
+            k += 1;
+        }
+        return None;
+    }
+    None
+}
+
+/// Parse a metadata argument's raw text into units — lenient: a field
+/// that fails to parse is simply dropped, not fatal.
+fn meta_units(arg: &str, size: f64, measure: &dyn Fn(char, f64, Style) -> f64) -> Option<Vec<Unit>> {
+    let cs: Vec<char> = arg.chars().collect();
+    let (evs, used) = stream(&cs, 0, None, size, measure, 4, false)?;
+    if used != cs.len() {
+        return None;
+    }
+    let mut us = Vec::new();
+    for e in evs {
+        match e {
+            Ev::Unit(u) => us.push(u),
+            _ => return None,
+        }
+    }
+    Some(us)
+}
+
 /// Typeset a document body — paragraphs, `\section` headings, styled
-/// groups and `$…$` inline math — into stackable lines. The preamble
-/// before `\begin{document}` is skipped; anything else outside the
-/// subset returns `None` and the caller falls back to the external
-/// engine. All widths flow through `measure`.
+/// groups, lists, `$…$` inline math, `$$…$$`/`\[…\]`/`equation`
+/// display math, `\footnote`, `\maketitle` — into stackable lines.
+/// `\title`/`\author`/`\date` are captured from the preamble or body.
+/// Anything else outside the subset returns `None` and the caller
+/// falls back to the external engine. All widths flow through `measure`.
 pub fn doc(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64, Style) -> f64) -> Option<Vec<Block>> {
     if src.len() > MAX_DOC {
         return None;
     }
     const DOC_OPEN: &str = "\\begin{document}";
     const DOC_CLOSE: &str = "\\end{document}";
-    let body = match src.find(DOC_OPEN) {
+    let (pre, body) = match src.find(DOC_OPEN) {
         Some(i) => {
             let rest = src.get(i + DOC_OPEN.len()..)?;
-            match rest.find(DOC_CLOSE) {
+            let body = match rest.find(DOC_CLOSE) {
                 Some(j) => rest.get(..j)?,
                 None => rest,
-            }
+            };
+            (src.get(..i).unwrap_or_default(), body)
         }
-        None => src,
+        None => ("", src),
     };
+    let pre_chars: Vec<char> = pre.chars().collect();
+    let mut meta: [Option<Vec<Unit>>; 3] = [None, None, None];
+    for (idx, cmd) in ["title", "author", "date"].iter().enumerate() {
+        if let (Some(slot), Some(arg)) = (meta.get_mut(idx), meta_arg(&pre_chars, cmd)) {
+            *slot = meta_units(&arg, size, measure);
+        }
+    }
     let chars: Vec<char> = body.chars().collect();
     let (evs, used) = stream(&chars, 0, None, size, measure, 0, true)?;
     if used != chars.len() {
@@ -1202,6 +1397,54 @@ pub fn doc(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64, Style) 
                         out.push(Block::Line(emit_line(&units, s, ce, &hcfg, false, None)));
                     }
                     out.push(Block::Gap(hs * 0.35));
+                }
+            }
+            Ev::Note(us) => {
+                // Footnotes typeset at 85% into their own block — the
+                // caller stacks them at the bottom of the page.
+                let ns = size * 0.85;
+                let ncfg = ParaCfg { size: ns, width, space_w: measure(' ', ns, Style::Regular).max(ns * 0.2), x_off: 0.0, measure };
+                let mut us = us;
+                let mut nout = Vec::new();
+                emit_para(&mut us, &mut nout, &ncfg);
+                if !nout.is_empty() {
+                    out.push(Block::Note(nout));
+                }
+            }
+            Ev::Math(mut f) => {
+                emit_para(&mut para, &mut out, &cfg);
+                let dx = ((width - f.width) / 2.0).max(0.0);
+                for it in &mut f.items {
+                    match it {
+                        Item::Text { x, .. } | Item::Rule { x, .. } => *x += dx,
+                    }
+                }
+                out.push(Block::Gap(size * 0.5));
+                out.push(Block::Line(f));
+                out.push(Block::Gap(size * 0.5));
+            }
+            Ev::Meta(idx, us) => {
+                if let Some(slot) = meta.get_mut(idx) {
+                    *slot = Some(us);
+                }
+            }
+            Ev::Maketitle => {
+                emit_para(&mut para, &mut out, &cfg);
+                if let Some(us) = meta[0].take() {
+                    let hs = size * 1.8;
+                    let hcfg = ParaCfg { size: hs, width, space_w: measure(' ', hs, Style::Regular).max(hs * 0.2), x_off: 0.0, measure };
+                    out.push(Block::Gap(hs * 0.5));
+                    for (s, ce, _) in break_lines(&us, &hcfg, true) {
+                        out.push(Block::Line(emit_line(&us, s, ce, &hcfg, false, None)));
+                    }
+                    out.push(Block::Gap(hs * 0.3));
+                }
+                for m in meta.iter_mut().skip(1) {
+                    if let Some(us) = m.take() {
+                        let mut us = us;
+                        out.push(Block::Gap(size * 0.3));
+                        emit_para(&mut us, &mut out, &cfg);
+                    }
                 }
             }
         }
@@ -1291,7 +1534,7 @@ mod tests {
     #[test]
     fn doc_outside_subset_falls_back() {
         assert!(doc("\\begin{document}\\begin{table}x\\end{table}\\end{document}", 10.0, 400.0, &fixed).is_none());
-        assert!(doc("text \\footnote{note} more", 10.0, 400.0, &fixed).is_none());
+        assert!(doc("text \\includegraphics{a.png} more", 10.0, 400.0, &fixed).is_none());
         assert!(doc("unclosed { group", 10.0, 400.0, &fixed).is_none());
         // A list body is only in-subset when the env opens *and* closes
         // inside the document — stray \end must not be swallowed.
@@ -1356,6 +1599,104 @@ mod tests {
         assert!(all.contains("linked"), "{all}");
         // \label produces nothing.
         assert!(!all.contains("sec:y"), "{all}");
+    }
+
+    #[test]
+    fn footnotes_become_notes() {
+        let src = "Text here\\footnote{the note body} continues.";
+        let blocks = doc(src, 10.0, 400.0, &fixed).unwrap();
+        let note = blocks.iter().find_map(|b| match b {
+            Block::Note(ns) => Some(ns),
+            _ => None,
+        });
+        let ns = note.expect("a Note block");
+        let mut all = String::new();
+        for b in ns {
+            if let Block::Line(f) = b {
+                for i in &f.items {
+                    if let Item::Text { text, .. } = i {
+                        all.push_str(text);
+                    }
+                }
+            }
+        }
+        assert!(all.contains("note"), "{all}");
+        assert!(all.contains("body"), "{all}");
+        // The raised marker lives in the body line.
+        let marker = blocks.iter().any(|b| match b {
+            Block::Line(f) => f.items.iter().any(|i| matches!(i, Item::Text { y, text, .. } if *y > 0.0 && text.as_str() == "1")),
+            _ => false,
+        });
+        assert!(marker, "no superscript marker in the body");
+    }
+
+    #[test]
+    fn display_math_centers() {
+        for src in ["$$x+y$$", "\\[x+y\\]", "\\begin{equation}x+y\\end{equation}", "\\begin{equation*}x+y\\end{equation*}"] {
+            let blocks = doc(src, 10.0, 400.0, &fixed).unwrap();
+            assert!(
+                blocks.iter().any(|b| matches!(b, Block::Line(f) if f.items.iter().all(|i| match i { Item::Text { x, .. } => *x > 0.0, _ => true }))),
+                "{src} did not produce a centered line"
+            );
+        }
+        // A math env outside the math subset still falls back.
+        assert!(doc("\\begin{equation}\\left(x\\right)\\end{equation}", 10.0, 400.0, &fixed).is_none());
+    }
+
+    #[test]
+    fn maketitle_from_preamble_and_body() {
+        let src = "\\documentclass{article}\n\\title{My Paper}\n\\author{A \\and B}\n\\begin{document}\n\\maketitle\nBody text.\n\\end{document}";
+        let blocks = doc(src, 10.0, 400.0, &fixed).unwrap();
+        let mut all = String::new();
+        for b in &blocks {
+            if let Block::Line(f) = b {
+                for i in &f.items {
+                    if let Item::Text { text, .. } = i {
+                        all.push_str(text);
+                    }
+                }
+            }
+        }
+        assert!(all.contains("Paper"), "{all}");
+        assert!(all.contains("—"), "{all}");
+        assert!(all.contains("Body"), "{all}");
+    }
+
+    #[test]
+    fn nested_lists_and_multipara_items() {
+        let src = "\\begin{itemize}\\item outer\\begin{itemize}\\item inner\\end{itemize}\\end{itemize}";
+        let blocks = doc(src, 10.0, 400.0, &fixed).unwrap();
+        let mut xs = Vec::new();
+        for b in &blocks {
+            if let Block::Line(f) = b {
+                for i in &f.items {
+                    if let Item::Text { x, text, .. } = i {
+                        if text == "inner" || text == "outer" {
+                            xs.push((text.as_str(), *x));
+                        }
+                    }
+                }
+            }
+        }
+        let (outer_x, inner_x) = (xs.iter().find(|(t, _)| *t == "outer").map(|(_, x)| *x), xs.iter().find(|(t, _)| *t == "inner").map(|(_, x)| *x));
+        assert!(inner_x.unwrap_or(0.0) > outer_x.unwrap_or(f64::MAX), "nested item not deeper-indented: {xs:?}");
+        // Multi-paragraph item keeps its hang on the second paragraph.
+        let src2 = "\\begin{itemize}\\item first para.\n\nsecond para.\\end{itemize}";
+        let blocks2 = doc(src2, 10.0, 400.0, &fixed).unwrap();
+        let second_x = blocks2
+            .iter()
+            .filter_map(|b| match b {
+                Block::Line(f) => Some(f),
+                _ => None,
+            })
+            .flat_map(|f| f.items.iter())
+            .filter_map(|i| match i {
+                Item::Text { x, text, .. } => Some((text.clone(), *x)),
+                _ => None,
+            })
+            .find(|(t, _)| t.as_str() == "second")
+            .map(|(_, x)| x);
+        assert!(second_x.unwrap_or(0.0) > 1.0, "continuation paragraph lost its hang: {second_x:?}");
     }
 
     #[test]

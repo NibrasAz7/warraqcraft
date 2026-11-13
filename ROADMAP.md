@@ -344,3 +344,11 @@ widget) are tracked there — nothing in M0 depends on them.
   `\ref`/`\eqref`/… as TeX's own `??`, `\label` swallowed,
   `\url`/`\href`; stray `\end`/`\item` outside a list still falls
   back honestly. Parskip now article-like (0.15em).
+- TASK-24 — `typeset` coverage II: `\footnote` (raised marker +
+  bottom-of-page note column with `\footnoterule`, overflow carries
+  like TeX's footins), display math `$$…$$`/`\[…\]`/`equation` as
+  centered blocks, `\maketitle` (title 1.8× + `\author`/`\date`,
+  `\and` separators, preamble or body), nested lists scale hang by
+  depth, multi-paragraph `\item` keeps its hang, `\par` inside lists
+  continues the item. Preview pagination reserves the note column
+  and refits lines against it.

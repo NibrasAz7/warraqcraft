@@ -327,6 +327,98 @@ fn native_pdf(latex: &str) -> Option<Vec<u8>> {
     doc.save().ok()
 }
 
+/// Draw a fragment's items at a baseline — shared by body lines and
+/// the stacked footnote column. The `uni` maps collect glyph→unicode
+/// pairs for the font's ToUnicode table.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
+fn draw_frag(
+    page: &mut texpdf::Page,
+    f: &typeset::Fragment,
+    base: f64,
+    margin: f64,
+    reg: &texpdf::Ttf,
+    ital: &texpdf::Ttf,
+    use_italic: bool,
+    uni1: &mut std::collections::BTreeMap<u16, char>,
+    uni2: &mut std::collections::BTreeMap<u16, char>,
+) {
+    for it in &f.items {
+        match it {
+            typeset::Item::Text { x, y: iy, size: sz, style, text } => {
+                let (face, fname, m) = match style {
+                    typeset::Style::Italic if use_italic => (ital, "F2", &mut *uni2),
+                    _ => (reg, "F1", &mut *uni1),
+                };
+                let gids: Vec<u16> = text.chars().map(|c| face.gid(c)).collect();
+                for (i, c) in text.chars().enumerate() {
+                    if let Some(g) = gids.get(i) {
+                        m.insert(*g, c);
+                    }
+                }
+                page.text(fname, *sz, margin + x, base + iy, gids);
+            }
+            typeset::Item::Rule { x, y: ry, w, h } => page.rule(margin + x, base + ry, *w, *h),
+        }
+    }
+}
+
+/// True when every glyph in the block tree exists in its face —
+/// a .notdef anywhere means the doc isn't faithfully representable
+/// and the caller should compile externally instead.
+#[cfg(not(target_arch = "wasm32"))]
+fn blocks_glyphs_ok(bs: &[typeset::Block], reg: &texpdf::Ttf, ital: &texpdf::Ttf) -> bool {
+    bs.iter().all(|b| match b {
+        typeset::Block::Line(f) => f.items.iter().all(|it| match it {
+            typeset::Item::Text { text, style, .. } => {
+                let face = if matches!(style, typeset::Style::Italic) { ital } else { reg };
+                !text.chars().any(|c| !c.is_whitespace() && face.gid(c) == 0)
+            }
+            typeset::Item::Rule { .. } => true,
+        }),
+        typeset::Block::Note(ns) => blocks_glyphs_ok(ns, reg, ital),
+        typeset::Block::Gap(_) => true,
+    })
+}
+
+/// Stack the accumulated footnotes at the bottom of `page` under a
+/// short rule, then clear them. Called before every page turn and at
+/// the end of the document.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
+fn flush_notes(
+    page: &mut texpdf::Page,
+    notes: &mut Vec<typeset::Block>,
+    note_h: &mut f64,
+    margin: f64,
+    text_w: f64,
+    leading: f64,
+    reg: &texpdf::Ttf,
+    ital: &texpdf::Ttf,
+    use_italic: bool,
+    uni1: &mut std::collections::BTreeMap<u16, char>,
+    uni2: &mut std::collections::BTreeMap<u16, char>,
+) {
+    if notes.is_empty() {
+        return;
+    }
+    page.rule(margin, margin + *note_h + leading * 0.4, text_w * 0.3, 0.6);
+    let mut ny = margin + *note_h;
+    for nb in notes.iter() {
+        match nb {
+            typeset::Block::Line(f) => {
+                let base = ny - f.height;
+                draw_frag(page, f, base, margin, reg, ital, use_italic, uni1, uni2);
+                ny = base - f.depth;
+            }
+            typeset::Block::Gap(g) => ny -= g,
+            typeset::Block::Note(_) => {}
+        }
+    }
+    notes.clear();
+    *note_h = 0.0;
+}
+
 /// Typeset a document body in-process and serialize a paginated PDF —
 /// letter pages, 1-inch margins, ~14pt leading. `Some((bytes, pages))`
 /// only when the body stays inside `typeset`'s text subset and every
@@ -350,20 +442,8 @@ fn native_doc_pdf(src: &str) -> Option<(Vec<u8>, u32)> {
     let blocks = typeset::doc(src, size, text_w, &measure)?;
     // Every glyph must exist in its face — .notdef means the doc isn't
     // faithfully representable; fall back instead.
-    for b in &blocks {
-        if let typeset::Block::Line(f) = b {
-            for it in &f.items {
-                if let typeset::Item::Text { text, style, .. } = it {
-                    let face = match style {
-                        typeset::Style::Italic => ital_ref,
-                        typeset::Style::Regular => &reg,
-                    };
-                    if text.chars().any(|c| !c.is_whitespace() && face.gid(c) == 0) {
-                        return None;
-                    }
-                }
-            }
-        }
+    if !blocks_glyphs_ok(&blocks, &reg, ital_ref) {
+        return None;
     }
 
     let use_italic = ital.is_some();
@@ -375,41 +455,58 @@ fn native_doc_pdf(src: &str) -> Option<(Vec<u8>, u32)> {
     let mut y = page_h - margin;
     let mut first = true;
     let mut pages = 1u32;
-    for b in &blocks {
+    // Footnotes reserve space from the bottom margin up; notes that
+    // don't fit on their page carry to the next, like TeX's footins.
+    let mut notes: Vec<typeset::Block> = Vec::new();
+    let mut pending: Vec<typeset::Block> = Vec::new();
+    let mut note_h = 0.0f64;
+    let nlead = leading * 0.85;
+    let note_cap = (page_h - margin * 2.0) * 0.3;
+    for b in blocks {
         match b {
             typeset::Block::Gap(g) => y -= g,
+            typeset::Block::Note(nbs) => {
+                for nb in nbs {
+                    let cost = match &nb {
+                        typeset::Block::Gap(g) => *g,
+                        _ => nlead,
+                    };
+                    // Must fit below the lowest content already drawn;
+                    // otherwise the note follows TeX and moves on.
+                    let fits = cost <= y - margin - leading * 0.5 - note_h && note_h + cost <= note_cap;
+                    if fits {
+                        note_h += cost;
+                        notes.push(nb);
+                    } else {
+                        pending.push(nb);
+                    }
+                }
+            }
             typeset::Block::Line(f) => {
+                let reserve = if note_h > 0.0 { note_h + leading * 0.5 } else { 0.0 };
                 let base = if first { y - f.height } else { y - leading };
-                if base - f.depth < margin && !first {
+                if base - f.depth < margin + reserve && !first {
+                    flush_notes(&mut page, &mut notes, &mut note_h, margin, text_w, leading, &reg, ital_ref, use_italic, &mut uni1, &mut uni2);
                     doc.add_page(std::mem::replace(&mut page, texpdf::Page::new(page_w, page_h)));
                     y = page_h - margin;
                     pages += 1;
                     first = true;
+                    notes = std::mem::take(&mut pending);
+                    for nb in &notes {
+                        note_h += match nb {
+                            typeset::Block::Gap(g) => *g,
+                            _ => nlead,
+                        };
+                    }
                 }
                 let base = if first { y - f.height } else { y - leading };
                 first = false;
-                for it in &f.items {
-                    match it {
-                        typeset::Item::Text { x, y: iy, size: sz, style, text } => {
-                            let (face, fname, m) = match style {
-                                typeset::Style::Italic if use_italic => (ital_ref, "F2", &mut uni2),
-                                _ => (&reg, "F1", &mut uni1),
-                            };
-                            let gids: Vec<u16> = text.chars().map(|c| face.gid(c)).collect();
-                            for (i, c) in text.chars().enumerate() {
-                                if let Some(g) = gids.get(i) {
-                                    m.insert(*g, c);
-                                }
-                            }
-                            page.text(fname, *sz, margin + x, base + iy, gids);
-                        }
-                        typeset::Item::Rule { x, y: ry, w, h } => page.rule(margin + x, base + ry, *w, *h),
-                    }
-                }
+                draw_frag(&mut page, &f, base, margin, &reg, ital_ref, use_italic, &mut uni1, &mut uni2);
                 y = base;
             }
         }
     }
+    flush_notes(&mut page, &mut notes, &mut note_h, margin, text_w, leading, &reg, ital_ref, use_italic, &mut uni1, &mut uni2);
     doc.add_page(page);
     doc.font("F1", reg, uni1);
     if let Some(it) = ital {
