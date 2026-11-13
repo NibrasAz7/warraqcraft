@@ -57,6 +57,8 @@ pub struct Ttf {
     num_glyphs: u16,
     /// Per-glyph advances in font units, resolved eagerly at parse time.
     advances: Vec<u16>,
+    /// Table directory — tag → (offset, length), kept for subsetting.
+    dir: BTreeMap<[u8; 4], (usize, usize)>,
 }
 
 impl Ttf {
@@ -142,7 +144,7 @@ impl Ttf {
             }
         }
 
-        Ok(Ttf { units_per_em, ascender, descender, bytes: bytes.to_vec(), ps_name, cmap4, cmap12, num_glyphs, advances })
+        Ok(Ttf { units_per_em, ascender, descender, bytes: bytes.to_vec(), ps_name, cmap4, cmap12, num_glyphs, advances, dir: t })
     }
 
     /// Unicode scalar → glyph id (0 = .notdef), via format 12 then 4.
@@ -182,6 +184,236 @@ impl Ttf {
     pub fn width_pt(&self, c: char, size: f64) -> f64 {
         self.char_width(c) as f64 * self.scale(size)
     }
+
+    /// Rebuild the font containing only `used` gids (plus .notdef),
+    /// **preserving glyph ids** — content streams already reference
+    /// them, so unused slots become empty glyphs rather than a
+    /// renumber. Composite components are pulled in (ids unchanged),
+    /// glyf/loca/hmtx are truncated at the highest used gid, cmap is
+    /// regenerated from the used chars, head/hhea/maxp patched, and
+    /// `name`/`OS/2`/`post` copy verbatim. `None` on anything
+    /// unexpected — callers embed the whole font instead.
+    pub fn subset(&self, used: &BTreeMap<u16, char>) -> Option<Vec<u8>> {
+        let src = &self.bytes;
+        let tab = |t: &[u8; 4]| -> Option<(usize, usize)> { self.dir.get(t).copied() };
+        let (go, gl) = tab(b"glyf")?;
+        let glyf = src.get(go..go + gl)?;
+        let (lo, _) = tab(b"loca")?;
+        let (hmo, _) = tab(b"hmtx")?;
+        let (hdo, hdl) = tab(b"head")?;
+        let (hh, _) = tab(b"hhea")?;
+        let (mo, _) = tab(b"maxp")?;
+        let nhmet = be16(src, hh + 34)? as usize;
+        let long_loca = be16s(src, hdo + 50)? != 0;
+        let ng = self.num_glyphs as usize;
+        let mut loc = Vec::with_capacity(ng + 1);
+        for g in 0..=ng {
+            let v = if long_loca { be32(src, lo + g * 4)? as usize } else { be16(src, lo + g * 2)? as usize * 2 };
+            if v > gl {
+                return None;
+            }
+            loc.push(v);
+        }
+        // Glyph closure — pull in composite components, then renumber.
+        let mut set: std::collections::BTreeSet<u16> = used.keys().copied().filter(|&g| (g as usize) < ng).collect();
+        set.insert(0);
+        let mut stack: Vec<u16> = set.iter().copied().collect();
+        while let Some(g) = stack.pop() {
+            let (s, e) = (loc[g as usize], loc[g as usize + 1]);
+            if e <= s + 10 || be16s(glyf, s)? >= 0 {
+                continue; // empty or simple glyph
+            }
+            let mut p = s + 10;
+            while let (Some(fl), Some(gid)) = (be16(glyf, p), be16(glyf, p + 2)) {
+                p += 8; // flags + glyph id + two arg words
+                if fl & 0x0008 != 0 {
+                    p += 2;
+                } else if fl & 0x0040 != 0 {
+                    p += 4;
+                } else if fl & 0x0080 != 0 {
+                    p += 8;
+                }
+                if (gid as usize) < ng && set.insert(gid) {
+                    stack.push(gid);
+                }
+                if fl & 0x0020 == 0 || p > e {
+                    break;
+                }
+            }
+        }
+        let max_g = (*set.iter().next_back()?) as usize;
+        // glyf — slots 0..=max_g; unused glyphs get empty bodies but
+        // keep their ids so existing content stays valid.
+        let mut nglyf = Vec::new();
+        let mut nloca = Vec::with_capacity(max_g + 2);
+        for g in 0..=max_g {
+            nloca.push(nglyf.len() as u32);
+            if set.contains(&(g as u16)) {
+                let (s, e) = (loc[g], loc[g + 1]);
+                nglyf.extend_from_slice(glyf.get(s..e)?);
+                while nglyf.len() % 4 != 0 {
+                    nglyf.push(0);
+                }
+            }
+        }
+        nloca.push(nglyf.len() as u32);
+        // hmtx — one (advance, lsb) pair per retained glyph id.
+        let mut nhmtx = Vec::with_capacity((max_g + 1) * 4);
+        for g in 0..=max_g {
+            let (adv, lsb) = if g < nhmet {
+                (be16(src, hmo + g * 4)?, be16(src, hmo + g * 4 + 2)?)
+            } else {
+                (be16(src, hmo + (nhmet - 1) * 4)?, be16(src, hmo + nhmet * 4 + (g - nhmet) * 2)?)
+            };
+            nhmtx.extend_from_slice(&adv.to_be_bytes());
+            nhmtx.extend_from_slice(&lsb.to_be_bytes());
+        }
+        // cmap — char → gid (unchanged ids), sorted for grouping.
+        let mut pairs: Vec<(u32, u32)> = used.iter().filter_map(|(&g, &c)| ((g as usize) < ng).then_some((c as u32, g as u32))).collect();
+        pairs.sort_unstable();
+        let nsub = if pairs.iter().all(|&(c, _)| c <= 0xFFFF) { 2 } else { 1 };
+        let fmt4_len = if nsub == 2 { 16 + (pairs.len() + 1) * 8 + pairs.len() * 2 } else { 0 };
+        let mut cmap = Vec::new();
+        cmap.extend_from_slice(&[0, 0, 0, nsub as u8]);
+        if nsub == 2 {
+            cmap.extend_from_slice(&[0, 3, 0, 1]);
+            cmap.extend_from_slice(&((4 + nsub * 8) as u32).to_be_bytes());
+        }
+        cmap.extend_from_slice(&[0, 3, 0, 10]);
+        cmap.extend_from_slice(&((4 + nsub * 8 + fmt4_len) as u32).to_be_bytes());
+        if nsub == 2 {
+            // format 4 — one single-char segment per char, glyph ids in
+            // the trailing array (idRangeOffset uniform, see spec §cmap4).
+            let segs = pairs.len() + 1;
+            let mut pw = 1usize;
+            let mut es = 0usize;
+            while pw * 2 <= segs {
+                pw *= 2;
+                es += 1;
+            }
+            cmap.extend_from_slice(&4u16.to_be_bytes());
+            cmap.extend_from_slice(&(fmt4_len as u16).to_be_bytes());
+            cmap.extend_from_slice(&[0, 0]);
+            cmap.extend_from_slice(&(segs as u16 * 2).to_be_bytes());
+            cmap.extend_from_slice(&(pw as u16 * 2).to_be_bytes());
+            cmap.extend_from_slice(&(es as u16).to_be_bytes());
+            cmap.extend_from_slice(&(segs as u16 * 2 - pw as u16 * 2).to_be_bytes());
+            for &(c, _) in &pairs {
+                cmap.extend_from_slice(&(c as u16).to_be_bytes());
+            }
+            cmap.extend_from_slice(&0xFFFFu16.to_be_bytes());
+            cmap.extend_from_slice(&[0, 0]);
+            for &(c, _) in &pairs {
+                cmap.extend_from_slice(&(c as u16).to_be_bytes());
+            }
+            cmap.extend_from_slice(&0xFFFFu16.to_be_bytes());
+            for _ in &pairs {
+                cmap.extend_from_slice(&0u16.to_be_bytes());
+            }
+            cmap.extend_from_slice(&1u16.to_be_bytes()); // idDelta terminator
+            for _ in &pairs {
+                cmap.extend_from_slice(&(segs as u16 * 2).to_be_bytes());
+            }
+            cmap.extend_from_slice(&0u16.to_be_bytes());
+            for &(_, g) in &pairs {
+                cmap.extend_from_slice(&(g as u16).to_be_bytes());
+            }
+        }
+        // format 12 — contiguous (char,gid) groups.
+        let mut groups: Vec<(u32, u32, u32)> = Vec::new();
+        for &(c, g) in &pairs {
+            match groups.last_mut() {
+                Some(gr) if gr.1 + 1 == c && gr.2 + (c - gr.0) == g => gr.1 = c,
+                _ => groups.push((c, c, g)),
+            }
+        }
+        cmap.extend_from_slice(&12u16.to_be_bytes());
+        cmap.extend_from_slice(&0u16.to_be_bytes());
+        cmap.extend_from_slice(&((16 + groups.len() * 12) as u32).to_be_bytes());
+        cmap.extend_from_slice(&0u32.to_be_bytes());
+        cmap.extend_from_slice(&(groups.len() as u32).to_be_bytes());
+        for &(a, b, g) in &groups {
+            cmap.extend_from_slice(&a.to_be_bytes());
+            cmap.extend_from_slice(&b.to_be_bytes());
+            cmap.extend_from_slice(&g.to_be_bytes());
+        }
+        // loca — long format.
+        let mut nloca_b = Vec::with_capacity(nloca.len() * 4);
+        for v in &nloca {
+            nloca_b.extend_from_slice(&v.to_be_bytes());
+        }
+        // head/hhea/maxp patched copies.
+        let mut nhead = src.get(hdo..hdo + hdl)?.to_vec();
+        nhead.get_mut(8..12)?.copy_from_slice(&0u32.to_be_bytes());
+        nhead.get_mut(50..52)?.copy_from_slice(&1i16.to_be_bytes());
+        let mut nhhea = src.get(hh..hh + tab(b"hhea")?.1)?.to_vec();
+        nhhea.get_mut(34..36)?.copy_from_slice(&((max_g + 1) as u16).to_be_bytes());
+        let mut nmaxp = src.get(mo..mo + tab(b"maxp")?.1)?.to_vec();
+        nmaxp.get_mut(4..6)?.copy_from_slice(&((max_g + 1) as u16).to_be_bytes());
+        // Assemble — sorted directory, 4-byte-aligned tables.
+        let mut tables: Vec<([u8; 4], Vec<u8>)> = vec![
+            (*b"cmap", cmap),
+            (*b"glyf", nglyf),
+            (*b"head", nhead),
+            (*b"hhea", nhhea),
+            (*b"hmtx", nhmtx),
+            (*b"loca", nloca_b),
+            (*b"maxp", nmaxp),
+        ];
+        for tag in [b"name", b"post", b"OS/2"] {
+            if let Some(&(o, l)) = self.dir.get(tag) {
+                if let Some(d) = src.get(o..o + l) {
+                    tables.push((*tag, d.to_vec()));
+                }
+            }
+        }
+        tables.sort_by_key(|(t, _)| *t);
+        let nt = tables.len() as u16;
+        let mut pw = 1u16;
+        let mut es = 0u16;
+        while pw * 2 <= nt {
+            pw *= 2;
+            es += 1;
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(&0x00010000u32.to_be_bytes());
+        out.extend_from_slice(&nt.to_be_bytes());
+        out.extend_from_slice(&(pw * 16).to_be_bytes());
+        out.extend_from_slice(&es.to_be_bytes());
+        out.extend_from_slice(&(nt * 16 - pw * 16).to_be_bytes());
+        let mut off = 12 + nt as usize * 16;
+        let mut recs = Vec::new();
+        for (tag, data) in &tables {
+            recs.push((*tag, table_sum(data), off as u32, data.len() as u32));
+            off += (data.len() + 3) & !3;
+        }
+        for (tag, cs, o, l) in &recs {
+            out.extend_from_slice(tag);
+            out.extend_from_slice(&cs.to_be_bytes());
+            out.extend_from_slice(&o.to_be_bytes());
+            out.extend_from_slice(&l.to_be_bytes());
+        }
+        let head_off = recs.iter().find(|(t, ..)| t == b"head").map(|(.., o, _)| *o as usize)?;
+        for (_, data) in &tables {
+            out.extend_from_slice(data);
+            while out.len() % 4 != 0 {
+                out.push(0);
+            }
+        }
+        // checkSumAdjustment — the whole file, that field held at 0.
+        let adj = 0xB1B0AFBAu32.wrapping_sub(table_sum(&out));
+        out.get_mut(head_off + 8..head_off + 12)?.copy_from_slice(&adj.to_be_bytes());
+        Some(out)
+    }
+}
+
+/// Table checksum — big-endian u32 words, tail zero-padded.
+fn table_sum(data: &[u8]) -> u32 {
+    data.chunks(4).fold(0u32, |acc, c| {
+        let mut w = [0u8; 4];
+        w[..c.len()].copy_from_slice(c);
+        acc.wrapping_add(u32::from_be_bytes(w))
+    })
 }
 
 /// nameID `want` as UTF-8 — first Windows-Unicode or Macintosh record
@@ -374,8 +606,10 @@ impl Doc {
             let (ff, fd, cid, f0, tu) = (b, b + 1, b + 2, b + 3, b + 4);
             font_res.push_str(&format!("/{name} {f0} 0 R "));
 
-            // FontFile2 — raw TTF stream.
-            objs[ff] = stream(&format!("<< /Length {} /Length1 {} >>", ttf.bytes.len(), ttf.bytes.len()), &ttf.bytes);
+            // FontFile2 — a used-glyph subset when it rebuilds cleanly,
+            // the whole TTF otherwise.
+            let embedded = self.uni.get(name).and_then(|m| ttf.subset(m)).unwrap_or_else(|| ttf.bytes.clone());
+            objs[ff] = stream(&format!("<< /Length {} /Length1 {} >>", embedded.len(), embedded.len()), &embedded);
             // FontDescriptor — metrics in glyph space (1000 upem).
             let upm = ttf.units_per_em as f64;
             let asc = (ttf.ascender as f64 * 1000.0 / upm).round() as i32;
@@ -604,5 +838,43 @@ mod tests {
         let pdf = doc.save().unwrap();
         let parsed = hayro_syntax::Pdf::new(pdf).unwrap_or_else(|e| panic!("our PDF should parse in hayro: {e:?}"));
         assert_eq!(parsed.pages().len(), 1);
+    }
+
+    /// A subset must re-parse, map the same chars to the same advances
+    /// (renumbered gids), keep .notdef, and shrink dramatically.
+    #[test]
+    fn subset_renumbers_and_reuses() {
+        let Some(bytes) =
+            ["C:\\Windows\\Fonts\\arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf"]
+                .iter()
+                .find_map(|p| std::fs::read(p).ok())
+        else {
+            return;
+        };
+        let ttf = Ttf::parse(&bytes).unwrap();
+        let chars: Vec<char> = "Hello, World!0123".chars().collect();
+        let used: BTreeMap<u16, char> = chars.iter().map(|&c| (ttf.gid(c), c)).collect();
+        let sub_bytes = ttf.subset(&used).unwrap();
+        assert!(sub_bytes.len() < bytes.len() / 4, "{} vs {}", sub_bytes.len(), bytes.len());
+        let sub = Ttf::parse(&sub_bytes).unwrap();
+        for &c in &chars {
+            let old_gid = ttf.gid(c);
+            if old_gid == 0 {
+                continue;
+            }
+            let new_gid = sub.gid(c);
+            assert!(new_gid > 0, "{c:?} unmapped in subset");
+            // Advance must travel with the glyph.
+            assert_eq!(sub.advance(new_gid), ttf.advance(old_gid), "{c:?} advance changed");
+        }
+        // Whole-PDF round trip with a subsetted font still parses.
+        let mut doc = Doc::new();
+        let mut page = Page::new(200.0, 100.0);
+        let gids: Vec<u16> = "Hi".chars().map(|c| sub.gid(c)).collect();
+        page.text("F1", 12.0, 10.0, 50.0, gids);
+        doc.font("F1", ttf, used);
+        doc.add_page(page);
+        let pdf = doc.save().unwrap();
+        assert_eq!(hayro_syntax::Pdf::new(pdf).unwrap().pages().len(), 1);
     }
 }

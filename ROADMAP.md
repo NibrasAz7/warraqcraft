@@ -352,3 +352,9 @@ widget) are tracked there — nothing in M0 depends on them.
   depth, multi-paragraph `\item` keeps its hang, `\par` inside lists
   continues the item. Preview pagination reserves the note column
   and refits lines against it.
+- TASK-25 — `texpdf` font subsetting: `Ttf::subset` rebuilds the font
+  with only used glyphs — glyf/loca/hmtx truncated at the highest
+  used gid (ids preserved so content streams stay valid), composite
+  components pulled in by closure, cmap regenerated (format 4 + 12),
+  head/hhea/maxp patched, checksum recomputed. Whole-TTF fallback on
+  anything unexpected. Preview PDFs 2.2MB → ~90KB.
