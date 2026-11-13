@@ -193,8 +193,8 @@ pub fn permission(command: &str, params: &Value) -> Option<Permission> {
         }
         "ai.memory.import" => Permission::new(Tier::FilesystemWrite, true, "writes persisted memory"),
         "toolchain.probe" => Permission::new(Tier::ExternalProcess, false, "probes known tool binaries with --version"),
-        "document.compile" | "math.preview" | "user_tool.run" | "repo.init" | "repo.remote" | "repo.pull" | "repo.push" | "repo.commit"
-        | "repo.branches" => Permission::new(Tier::ExternalProcess, true, "starts a bounded external process"),
+        "document.compile" | "math.preview" | "doc.preview" | "user_tool.run" | "repo.init" | "repo.remote" | "repo.pull" | "repo.push"
+        | "repo.commit" | "repo.branches" => Permission::new(Tier::ExternalProcess, true, "starts a bounded external process"),
         "bib.audit" => Permission::new(Tier::ReadOnly, false, "reads project .bib files"),
         "bib.import" => Permission::new(Tier::FilesystemWrite, true, "appends converted entries to a project .bib file"),
         "doc.suggest" => Permission::new(Tier::BufferEdit, true, "registers a pending anchored edit proposal"),
@@ -879,6 +879,7 @@ fn should_audit(command: &str) -> bool {
             | "repo.commit"
             | "repo.branches"
             | "math.preview"
+            | "doc.preview"
     )
 }
 

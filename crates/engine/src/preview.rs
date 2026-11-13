@@ -138,6 +138,75 @@ pub fn run(session: &Session, params: &Value) -> Result<Value, EngineError> {
     }))
 }
 
+/// `doc.preview {"latex": "<full source>"}` → same response shape as
+/// `math.preview` plus `"pages": n`. When `latex` is omitted the open
+/// document's file is read (bounded). The native path typesets the
+/// document body in-process when it stays inside `typeset`'s text
+/// subset (paragraphs, `\section` headings, styled groups, `$…$`
+/// inline math) — anything else falls back to a real compile of the
+/// document, so callers always get a PDF or an honest error.
+pub fn doc_preview(session: &Session, params: &Value) -> Result<Value, EngineError> {
+    const MAX_SRC: usize = 512 * 1024;
+    let src = match params.get("latex").and_then(Value::as_str) {
+        Some(s) if s.len() > MAX_SRC => return Err(EngineError::BadParam("latex")),
+        Some(s) => s.to_string(),
+        None => {
+            let p = session.path().ok_or(EngineError::NoFile)?;
+            let meta = std::fs::metadata(p)?;
+            if meta.len() > MAX_SRC as u64 {
+                return Err(EngineError::BadParam("latex"));
+            }
+            String::from_utf8_lossy(&std::fs::read(p)?).into_owned()
+        }
+    };
+    if src.trim().is_empty() {
+        return Err(EngineError::BadParam("latex"));
+    }
+    let dir = doc_dir(session).join(crate::BUILD_DIR).join(PREVIEW_DIR);
+    std::fs::create_dir_all(&dir)?;
+    let h = frag_hash(src.as_bytes());
+    let okmark = dir.join(format!("d{h:016x}.ok"));
+    let built = dir.join(crate::BUILD_DIR).join(format!("d{h:016x}.pdf"));
+    if okmark.is_file() && built.is_file() {
+        // Mark format: "n<pages>" native, "e<pages>" external.
+        let mark = std::fs::read_to_string(&okmark).unwrap_or_default();
+        let pages = mark.get(1..).and_then(|t| t.trim().parse::<u32>().ok());
+        return Ok(
+            json!({"pdf": built.display().to_string(), "pages": pages, "cached": true, "native": mark.starts_with('n'), "errors": [], "log": ""}),
+        );
+    }
+    if let Some((bytes, pages)) = native_doc_pdf(&src) {
+        std::fs::create_dir_all(built.parent().unwrap_or(&dir))?;
+        craft_atomic::atomic_write(&built, &bytes)?;
+        let _ = craft_atomic::atomic_write(&okmark, format!("n{pages}").as_bytes());
+        prune_warm(&dir);
+        return Ok(json!({"pdf": built.display().to_string(), "pages": pages, "cached": false, "native": true, "errors": [], "log": ""}));
+    }
+
+    // Outside the native subset — compile the document for real.
+    let (scratch, owned_src) = match session.path() {
+        Some(p) => (p.to_path_buf(), None),
+        None => {
+            let s = dir.join(format!("d{h:016x}.tex"));
+            craft_atomic::atomic_write(&s, src.as_bytes())?;
+            (s, Some(src.as_str()))
+        }
+    };
+    let report = compile_file(&scratch, owned_src)?;
+    if report.pdf.is_some() {
+        let _ = craft_atomic::atomic_write(&okmark, format!("e{}", report.pages.unwrap_or(1)).as_bytes());
+        prune_warm(&dir);
+    }
+    Ok(json!({
+        "pdf": report.pdf.as_ref().map(|p| p.display().to_string()),
+        "pages": report.pages,
+        "cached": false,
+        "native": false,
+        "log": char_tail(&report.log_tail, MAX_LOG_CHARS),
+        "errors": report.errors.iter().map(|e: &CompileError| json!({"line": e.line, "message": e.message})).collect::<Vec<_>>(),
+    }))
+}
+
 // ---------- native typeset path ----------
 
 /// Serif TTF candidates for the native preview — first found wins.
@@ -258,9 +327,106 @@ fn native_pdf(latex: &str) -> Option<Vec<u8>> {
     doc.save().ok()
 }
 
+/// Typeset a document body in-process and serialize a paginated PDF —
+/// letter pages, 1-inch margins, ~14pt leading. `Some((bytes, pages))`
+/// only when the body stays inside `typeset`'s text subset and every
+/// glyph exists in the font; otherwise the caller compiles for real.
+#[cfg(not(target_arch = "wasm32"))]
+fn native_doc_pdf(src: &str) -> Option<(Vec<u8>, u32)> {
+    let (reg, ital) = preview_fonts()?;
+    let size = 11.0;
+    let page_w = 612.0;
+    let page_h = 792.0;
+    let margin = 72.0;
+    let text_w = page_w - margin * 2.0;
+    let leading = size * 1.25;
+    let ital_ref = ital.as_ref().unwrap_or(&reg);
+    let measure = |c: char, s: f64, st: typeset::Style| -> f64 {
+        match st {
+            typeset::Style::Italic => ital_ref.width_pt(c, s),
+            typeset::Style::Regular => reg.width_pt(c, s),
+        }
+    };
+    let blocks = typeset::doc(src, size, text_w, &measure)?;
+    // Every glyph must exist in its face — .notdef means the doc isn't
+    // faithfully representable; fall back instead.
+    for b in &blocks {
+        if let typeset::Block::Line(f) = b {
+            for it in &f.items {
+                if let typeset::Item::Text { text, style, .. } = it {
+                    let face = match style {
+                        typeset::Style::Italic => ital_ref,
+                        typeset::Style::Regular => &reg,
+                    };
+                    if text.chars().any(|c| !c.is_whitespace() && face.gid(c) == 0) {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+
+    let use_italic = ital.is_some();
+    let mut uni1 = std::collections::BTreeMap::new();
+    let mut uni2 = std::collections::BTreeMap::new();
+    let mut doc = texpdf::Doc::new();
+    let mut page = texpdf::Page::new(page_w, page_h);
+    // `y` is the current baseline; first line per page tops at margin.
+    let mut y = page_h - margin;
+    let mut first = true;
+    let mut pages = 1u32;
+    for b in &blocks {
+        match b {
+            typeset::Block::Gap(g) => y -= g,
+            typeset::Block::Line(f) => {
+                let base = if first { y - f.height } else { y - leading };
+                if base - f.depth < margin && !first {
+                    doc.add_page(std::mem::replace(&mut page, texpdf::Page::new(page_w, page_h)));
+                    y = page_h - margin;
+                    pages += 1;
+                    first = true;
+                }
+                let base = if first { y - f.height } else { y - leading };
+                first = false;
+                for it in &f.items {
+                    match it {
+                        typeset::Item::Text { x, y: iy, size: sz, style, text } => {
+                            let (face, fname, m) = match style {
+                                typeset::Style::Italic if use_italic => (ital_ref, "F2", &mut uni2),
+                                _ => (&reg, "F1", &mut uni1),
+                            };
+                            let gids: Vec<u16> = text.chars().map(|c| face.gid(c)).collect();
+                            for (i, c) in text.chars().enumerate() {
+                                if let Some(g) = gids.get(i) {
+                                    m.insert(*g, c);
+                                }
+                            }
+                            page.text(fname, *sz, margin + x, base + iy, gids);
+                        }
+                        typeset::Item::Rule { x, y: ry, w, h } => page.rule(margin + x, base + ry, *w, *h),
+                    }
+                }
+                y = base;
+            }
+        }
+    }
+    doc.add_page(page);
+    doc.font("F1", reg, uni1);
+    if let Some(it) = ital {
+        doc.font("F2", it, uni2);
+    }
+    Some((doc.save().ok()?, pages))
+}
+
 /// The web build keeps the external path only — no font filesystem.
 #[cfg(target_arch = "wasm32")]
 fn native_pdf(_latex: &str) -> Option<Vec<u8>> {
+    None
+}
+
+/// Wasm stub — no font filesystem or document preview.
+#[cfg(target_arch = "wasm32")]
+fn native_doc_pdf(_src: &str) -> Option<(Vec<u8>, u32)> {
     None
 }
 

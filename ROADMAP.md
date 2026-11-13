@@ -326,3 +326,14 @@ widget) are tracked there — nothing in M0 depends on them.
   and falls back to the external compile for anything else; both
   paths share the warm content-hash cache. Verified: emitted PDFs
   parse in hayro-syntax (the preview pane's rasterizer).
+- TASK-22 — `typeset` text mode + `doc.preview`: paragraph line
+  breaking (total-fit Knuth–Plass pass — glue stretch ½/shrink ⅓,
+  badness² demerits, ragged last line), `\section` headings, styled
+  groups (`\emph`/`\textbf`), `$…$` inline math, `\` forced breaks,
+  blank-line/`\par` paragraph ends; preamble skipped. `doc.preview`
+  paginates blocks onto letter pages through `texpdf` — real
+  multi-page PDF with `"native": true`, same warm cache; out-of-subset
+  docs compile externally unchanged. Fixed a latent math-parser bug
+  where a bare `^2`/`\frac12` operand swallowed the rest of the
+  stream (`x^2+y`), and a relative-path `current_dir("")` crash in
+  the compile path (bare filenames gave `io error 123`).

@@ -127,6 +127,7 @@ pub const COMMANDS: &[&str] = &[
     "ai.eval.list",
     "ai.eval.run",
     "math.preview",
+    "doc.preview",
     "text.stats",
     "project.snapshot",
     "snapshot.list",
@@ -630,6 +631,8 @@ impl Session {
             // Inline math preview: fragment → scratch `.tex` → PDF
             // under `.warraqcraft/preview/` for the UI to rasterize.
             "math.preview" => preview::run(self, params),
+            // Native-subset document preview, external fallback.
+            "doc.preview" => preview::doc_preview(self, params),
             // Document statistics (words, chars, math spans, …).
             "text.stats" => stats::run(self, params),
             "ai.providers" => Ok(ai::providers()),
@@ -811,8 +814,14 @@ pub fn compile_file(path: &Path, src: Option<&str>) -> Result<CompileReport, Eng
 
 /// `compile_file` with an explicit engine override — `Some("lualatex")`
 /// pins the binary; `None` auto-picks per the document's packages.
+/// `path.parent()` of a bare filename is `""`, not `None` — normalize
+/// to the current dir so `current_dir`, `join` and `read_dir` behave.
+fn parent_dir(path: &Path) -> &Path {
+    path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."))
+}
+
 pub fn compile_file_with(path: &Path, src: Option<&str>, engine_override: Option<&str>) -> Result<CompileReport, EngineError> {
-    let file_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_dir = parent_dir(path);
 
     let owned;
     let src = match src {
@@ -830,7 +839,7 @@ pub fn compile_file_with(path: &Path, src: Option<&str>, engine_override: Option
     // instead; the path resolves relative to this document's directory.
     let root_path = magic.root.as_deref().map(|r| file_dir.join(r)).filter(|c| c != path && c.is_file());
     let compile_path = root_path.as_deref().unwrap_or(path);
-    let parent = compile_path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = parent_dir(compile_path);
     let name = compile_path.file_name().ok_or(EngineError::NoFile)?.to_string_lossy();
     let stem = compile_path.file_stem().ok_or(EngineError::NoFile)?.to_string_lossy();
 
