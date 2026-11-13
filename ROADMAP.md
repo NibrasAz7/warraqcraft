@@ -337,3 +337,10 @@ widget) are tracked there — nothing in M0 depends on them.
   where a bare `^2`/`\frac12` operand swallowed the rest of the
   stream (`x^2+y`), and a relative-path `current_dir("")` crash in
   the compile path (bare filenames gave `io error 123`).
+- TASK-23 — `typeset` coverage: `\parindent` first-line indent (1.5em,
+  rigid unit counted by the breaker), `\item` in `itemize`/`enumerate`
+  (`\item[label]` overrides; hanging 2em indent with right-aligned
+  markers), `\cite`/`\citep`/… rendered as `[key]` until texbib,
+  `\ref`/`\eqref`/… as TeX's own `??`, `\label` swallowed,
+  `\url`/`\href`; stray `\end`/`\item` outside a list still falls
+  back honestly. Parskip now article-like (0.15em).

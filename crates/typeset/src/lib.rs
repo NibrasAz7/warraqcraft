@@ -583,6 +583,10 @@ enum Unit {
     Glue { breakable: bool },
     /// Forced break (`\\`, `\newline`).
     Break,
+    /// First-line paragraph indent — rigid space, not glue.
+    Indent(f64),
+    /// `\item` boundary — ends the segment and carries its marker.
+    Item(String),
 }
 
 /// A parse event: inline content, a paragraph boundary, or a heading.
@@ -629,6 +633,31 @@ fn restyle(units: &mut [Unit], style: Style) {
     }
 }
 
+/// Read `{name}` — the brace must be at `chars[*i]`; bounded to 128
+/// chars. Used for env names, cite keys, `\ref`/`\label` targets.
+fn braced_name(chars: &[char], i: &mut usize) -> Option<String> {
+    if chars.get(*i) != Some(&'{') {
+        return None;
+    }
+    let mut j = *i + 1;
+    while j < chars.len() && chars[j] != '}' && j - *i <= 128 {
+        j += 1;
+    }
+    if chars.get(j) != Some(&'}') {
+        return None;
+    }
+    let name: String = chars[*i + 1..j].iter().collect();
+    *i = j + 1;
+    Some(name)
+}
+
+/// Open list environment state — `ordered` distinguishes
+/// `enumerate` (numbered markers) from `itemize`/`description`.
+struct ListSt {
+    ordered: bool,
+    n: u32,
+}
+
 /// Parse one braced argument `{…}` into units — the opening brace
 /// must be at `chars[*i]`. Shared by `\emph`, `\section`, bare groups.
 fn braced_units(chars: &[char], i: &mut usize, size: f64, measure: &dyn Fn(char, f64, Style) -> f64, depth: usize) -> Option<Vec<Unit>> {
@@ -665,6 +694,7 @@ fn stream(
     }
     let mut evs: Vec<Ev> = Vec::new();
     let mut units: Vec<Unit> = Vec::new();
+    let mut lists: Vec<ListSt> = Vec::new();
     let mut i = pos;
     while i < chars.len() {
         if units.len() > MAX_UNITS {
@@ -787,6 +817,79 @@ fn stream(
                     "LaTeX" => push_word(&mut units, "LaTeX"),
                     "TeX" => push_word(&mut units, "TeX"),
                     "newline" => units.push(Unit::Break),
+                    "cite" | "citep" | "citet" | "parencite" | "textcite" | "footcite" | "citeyear" | "citeauthor" => {
+                        // Optional [..] args (up to two), then {key} —
+                        // rendered as the literal key until texbib lands.
+                        for _ in 0..2 {
+                            if chars.get(i) == Some(&'[') {
+                                let mut j = i + 1;
+                                while j < chars.len() && chars[j] != ']' && j - i <= 128 {
+                                    j += 1;
+                                }
+                                if chars.get(j) == Some(&']') {
+                                    i = j + 1;
+                                }
+                            }
+                        }
+                        let key = braced_name(chars, &mut i)?;
+                        push_word(&mut units, &format!("[{key}]"));
+                    }
+                    // Unresolved refs render as TeX's own `??`.
+                    "ref" | "eqref" | "pageref" | "autoref" | "cref" | "Cref" | "vref" => {
+                        let _ = braced_name(chars, &mut i)?;
+                        push_word(&mut units, "??");
+                    }
+                    "label" => {
+                        let _ = braced_name(chars, &mut i)?;
+                    }
+                    "url" => {
+                        let u = braced_name(chars, &mut i)?;
+                        push_word(&mut units, &u);
+                    }
+                    "href" => {
+                        let _ = braced_name(chars, &mut i)?;
+                        let inner = braced_units(chars, &mut i, size, measure, depth)?;
+                        units.extend(inner);
+                    }
+                    "begin" if top => {
+                        let env = braced_name(chars, &mut i)?;
+                        match env.as_str() {
+                            "itemize" | "description" => lists.push(ListSt { ordered: false, n: 0 }),
+                            "enumerate" => lists.push(ListSt { ordered: true, n: 0 }),
+                            _ => return None,
+                        }
+                    }
+                    "end" if top => {
+                        let env = braced_name(chars, &mut i)?;
+                        let ok = match (lists.pop(), env.as_str()) {
+                            (Some(l), "itemize" | "description") => !l.ordered,
+                            (Some(l), "enumerate") => l.ordered,
+                            _ => false,
+                        };
+                        if !ok {
+                            return None;
+                        }
+                    }
+                    "item" if top => {
+                        let top_l = lists.last_mut()?;
+                        let mut marker = if top_l.ordered {
+                            top_l.n += 1;
+                            format!("{}.", top_l.n)
+                        } else {
+                            "•".to_string()
+                        };
+                        if chars.get(i) == Some(&'[') {
+                            let mut j = i + 1;
+                            while j < chars.len() && chars[j] != ']' && j - i <= 128 {
+                                j += 1;
+                            }
+                            if chars.get(j) == Some(&']') {
+                                marker = chars[i + 1..j].iter().collect();
+                                i = j + 1;
+                            }
+                        }
+                        units.push(Unit::Item(marker));
+                    }
                     _ => return None,
                 }
             }
@@ -811,7 +914,8 @@ fn unit_w(u: &Unit, size: f64, space_w: f64, measure: &dyn Fn(char, f64, Style) 
         Unit::Word(cs) => cs.iter().map(|&(c, s)| measure(c, size, s)).sum(),
         Unit::Math(f) => f.width,
         Unit::Glue { .. } => space_w,
-        Unit::Break => 0.0,
+        Unit::Indent(v) => *v,
+        Unit::Break | Unit::Item(_) => 0.0,
     }
 }
 
@@ -821,6 +925,9 @@ struct ParaCfg<'a> {
     size: f64,
     width: f64,
     space_w: f64,
+    /// Hanging indent — lines emit this far right of the margin
+    /// (`\item` bodies).
+    x_off: f64,
     measure: &'a dyn Fn(char, f64, Style) -> f64,
 }
 
@@ -935,7 +1042,7 @@ fn break_lines(seg: &[Unit], cfg: &ParaCfg, ragged: bool) -> Vec<(usize, usize, 
 
 /// Emit one line's items at baseline y=0. Justified lines distribute
 /// the leftover across glue; ragged lines take natural widths.
-fn emit_line(seg: &[Unit], s: usize, ce: usize, cfg: &ParaCfg, justify: bool) -> Fragment {
+fn emit_line(seg: &[Unit], s: usize, ce: usize, cfg: &ParaCfg, justify: bool, marker: Option<&str>) -> Fragment {
     let (size, width, space_w, measure) = (cfg.size, cfg.width, cfg.space_w, cfg.measure);
     let mut w = 0.0;
     let mut glues = 0usize;
@@ -949,9 +1056,16 @@ fn emit_line(seg: &[Unit], s: usize, ce: usize, cfg: &ParaCfg, justify: bool) ->
         }
     }
     let extra = if justify && glues > 0 { ((width - w) / glues as f64).clamp(-space_w * (1.0 / 3.0), space_w * 1.5) } else { 0.0 };
-    let mut lay = Lay { measure, items: Vec::new(), x: 0.0, top: 0.0, bottom: 0.0 };
+    let mut lay = Lay { measure, items: Vec::new(), x: cfg.x_off, top: 0.0, bottom: 0.0 };
+    if let Some(m) = marker {
+        // `\item` label, right-aligned just left of the item's indent.
+        let mw: f64 = m.chars().map(|c| measure(c, size, Style::Regular)).sum();
+        lay.items.push(Item::Text { x: cfg.x_off - mw - space_w * 0.4, y: 0.0, size, style: Style::Regular, text: m.to_string() });
+        lay.top = lay.top.max(size * 0.75);
+    }
     for u in &seg[s..ce] {
         match u {
+            Unit::Indent(v) => lay.x += v,
             Unit::Word(cs) => {
                 let mut run_style: Option<Style> = None;
                 let mut run_x = 0.0;
@@ -996,7 +1110,7 @@ fn emit_line(seg: &[Unit], s: usize, ce: usize, cfg: &ParaCfg, justify: bool) ->
                 lay.x = x0 + f.width;
             }
             Unit::Glue { .. } => lay.x += space_w + extra,
-            Unit::Break => {}
+            Unit::Break | Unit::Item(_) => {}
         }
     }
     Fragment { items: lay.items, width: lay.x, height: lay.top.max(size * 0.7), depth: -lay.bottom.min(0.0), baseline: 0.0 }
@@ -1005,9 +1119,17 @@ fn emit_line(seg: &[Unit], s: usize, ce: usize, cfg: &ParaCfg, justify: bool) ->
 /// Emit a paragraph's lines (split at forced breaks) plus a trailing
 /// gap.
 fn emit_para(units: &mut Vec<Unit>, out: &mut Vec<Block>, cfg: &ParaCfg) {
+    // First-line indent — article \parindent ≈ 1.5em, inserted as a
+    // rigid unit so the breaker counts it. Paragraphs that open with
+    // `\item` discard it (the label carries the line instead).
+    if let Some(pos) = units.iter().position(|u| !matches!(u, Unit::Glue { .. })) {
+        units.insert(pos, Unit::Indent(cfg.size * 1.5));
+    }
     let mut seg_start = 0usize;
+    let mut hang = 0.0;
+    let mut marker: Option<String> = None;
     for k in 0..=units.len() {
-        if k == units.len() || matches!(units[k], Unit::Break) {
+        if k == units.len() || matches!(units[k], Unit::Break | Unit::Item(_)) {
             let mut a = seg_start;
             let mut b = k;
             while a < b && matches!(units[a], Unit::Glue { .. }) {
@@ -1016,17 +1138,24 @@ fn emit_para(units: &mut Vec<Unit>, out: &mut Vec<Block>, cfg: &ParaCfg) {
             while b > a && matches!(units[b - 1], Unit::Glue { .. }) {
                 b -= 1;
             }
-            if a < b {
-                for (s, ce, justify) in break_lines(&units[a..b], cfg, false) {
-                    out.push(Block::Line(emit_line(&units[a..b], s, ce, cfg, justify)));
+            if units[a..b].iter().any(|u| !matches!(u, Unit::Glue { .. } | Unit::Indent(_))) {
+                let icfg = ParaCfg { width: cfg.width - hang, x_off: hang, ..*cfg };
+                for (li, (s, ce, justify)) in break_lines(&units[a..b], &icfg, false).into_iter().enumerate() {
+                    let taken = if li == 0 { marker.take() } else { None };
+                    let mk = taken.as_deref();
+                    out.push(Block::Line(emit_line(&units[a..b], s, ce, &icfg, justify, mk)));
                 }
             }
             seg_start = k + 1;
+            if let Some(Unit::Item(m)) = units.get(k) {
+                hang = cfg.size * 2.0;
+                marker = Some(m.clone());
+            }
         }
     }
     units.clear();
     if matches!(out.last(), Some(Block::Line(_))) {
-        out.push(Block::Gap(cfg.size * 0.45));
+        out.push(Block::Gap(cfg.size * 0.15));
     }
 }
 
@@ -1056,7 +1185,7 @@ pub fn doc(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64, Style) 
     if used != chars.len() {
         return None;
     }
-    let cfg = ParaCfg { size, width, space_w: measure(' ', size, Style::Regular).max(size * 0.2), measure };
+    let cfg = ParaCfg { size, width, space_w: measure(' ', size, Style::Regular).max(size * 0.2), x_off: 0.0, measure };
     let mut out = Vec::new();
     let mut para: Vec<Unit> = Vec::new();
     for ev in evs {
@@ -1066,11 +1195,11 @@ pub fn doc(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64, Style) 
             Ev::Heading(units, f) => {
                 emit_para(&mut para, &mut out, &cfg);
                 let hs = size * f;
-                let hcfg = ParaCfg { size: hs, width, space_w: measure(' ', hs, Style::Regular).max(hs * 0.2), measure };
+                let hcfg = ParaCfg { size: hs, width, space_w: measure(' ', hs, Style::Regular).max(hs * 0.2), x_off: 0.0, measure };
                 if !units.is_empty() {
                     out.push(Block::Gap(hs * 0.7));
                     for (s, ce, _) in break_lines(&units, &hcfg, true) {
-                        out.push(Block::Line(emit_line(&units, s, ce, &hcfg, false)));
+                        out.push(Block::Line(emit_line(&units, s, ce, &hcfg, false, None)));
                     }
                     out.push(Block::Gap(hs * 0.35));
                 }
@@ -1161,9 +1290,72 @@ mod tests {
 
     #[test]
     fn doc_outside_subset_falls_back() {
-        assert!(doc("\\begin{document}\\begin{itemize}\\item x\\end{itemize}\\end{document}", 10.0, 400.0, &fixed).is_none());
-        assert!(doc("text \\cite{key} more", 10.0, 400.0, &fixed).is_none());
+        assert!(doc("\\begin{document}\\begin{table}x\\end{table}\\end{document}", 10.0, 400.0, &fixed).is_none());
+        assert!(doc("text \\footnote{note} more", 10.0, 400.0, &fixed).is_none());
         assert!(doc("unclosed { group", 10.0, 400.0, &fixed).is_none());
+        // A list body is only in-subset when the env opens *and* closes
+        // inside the document — stray \end must not be swallowed.
+        assert!(doc("\\end{itemize}", 10.0, 400.0, &fixed).is_none());
+        assert!(doc("\\item stray", 10.0, 400.0, &fixed).is_none());
+    }
+
+    #[test]
+    fn lists_render_with_markers() {
+        let src = "Intro.\\begin{itemize}\\item first\\item second\\end{itemize}Tail.";
+        let blocks = doc(src, 10.0, 400.0, &fixed).unwrap();
+        let texts: Vec<&str> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Line(f) => Some(f),
+                _ => None,
+            })
+            .flat_map(|f| f.items.iter())
+            .filter_map(|i| match i {
+                Item::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"•"), "{texts:?}");
+        // Enumerate counts markers.
+        let src2 = "\\begin{enumerate}\\item a\\item b\\end{enumerate}";
+        let blocks2 = doc(src2, 10.0, 400.0, &fixed).unwrap();
+        let marks: Vec<&str> = blocks2
+            .iter()
+            .filter_map(|b| match b {
+                Block::Line(f) => Some(f),
+                _ => None,
+            })
+            .flat_map(|f| f.items.iter())
+            .filter_map(|i| match i {
+                Item::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(marks.contains(&"1.") && marks.contains(&"2."), "{marks:?}");
+    }
+
+    #[test]
+    fn cites_refs_labels_urls() {
+        let src = "Work \\cite{knuth84} builds on \\citep[see][p.~2]{lamport94}; see Sec.~\\ref{sec:x}\\label{sec:y} and \\url{https://a.b/c} plus \\href{u}{linked text}.";
+        let blocks = doc(src, 10.0, 400.0, &fixed).unwrap();
+        let mut all = String::new();
+        for b in &blocks {
+            if let Block::Line(f) = b {
+                for i in &f.items {
+                    if let Item::Text { text, .. } = i {
+                        all.push_str(text);
+                        all.push(' ');
+                    }
+                }
+            }
+        }
+        assert!(all.contains("[knuth84]"), "{all}");
+        assert!(all.contains("[lamport94]"), "{all}");
+        assert!(all.contains("??"), "{all}");
+        assert!(all.contains("https://a.b/c"), "{all}");
+        assert!(all.contains("linked"), "{all}");
+        // \label produces nothing.
+        assert!(!all.contains("sec:y"), "{all}");
     }
 
     #[test]
