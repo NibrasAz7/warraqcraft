@@ -257,7 +257,7 @@ pub fn preview_file(path: &Path, engine: Option<&str>) -> Result<(CompileReport,
             true,
         ));
     }
-    if let Some((bytes, pages)) = native_doc_pdf(&src) {
+    if let Some((bytes, pages)) = native_doc_pdf_incr(path, &src) {
         std::fs::create_dir_all(built.parent().unwrap_or(&dir))?;
         craft_atomic::atomic_write(&built, &bytes)?;
         let _ = craft_atomic::atomic_write(&okmark, format!("n{pages} warraqcraft").as_bytes());
@@ -443,8 +443,8 @@ fn draw_frag(
 /// a .notdef anywhere means the doc isn't faithfully representable
 /// and the caller should compile externally instead.
 #[cfg(not(target_arch = "wasm32"))]
-fn blocks_glyphs_ok(bs: &[typeset::Block], reg: &texpdf::Ttf, ital: &texpdf::Ttf) -> bool {
-    bs.iter().all(|b| match b {
+fn blocks_glyphs_ok<'a>(mut bs: impl Iterator<Item = &'a typeset::Block>, reg: &texpdf::Ttf, ital: &texpdf::Ttf) -> bool {
+    bs.all(|b| match b {
         typeset::Block::Line(f) => f.items.iter().all(|it| match it {
             typeset::Item::Text { text, style, .. } => {
                 let face = if matches!(style, typeset::Style::Italic) { ital } else { reg };
@@ -452,7 +452,7 @@ fn blocks_glyphs_ok(bs: &[typeset::Block], reg: &texpdf::Ttf, ital: &texpdf::Ttf
             }
             typeset::Item::Rule { .. } => true,
         }),
-        typeset::Block::Note(ns) => blocks_glyphs_ok(ns, reg, ital),
+        typeset::Block::Note(ns) => blocks_glyphs_ok(ns.iter(), reg, ital),
         typeset::Block::Gap(_) => true,
     })
 }
@@ -495,12 +495,56 @@ fn flush_notes(
     *note_h = 0.0;
 }
 
+/// Per-path segment cache for dirty-region typesetting: an edit
+/// re-parses the body but reuses the line-broken blocks of every
+/// paragraph whose content key survived — only dirty segments pay
+/// the breaker before repagination. Bounded to a few dozen files.
+#[cfg(not(target_arch = "wasm32"))]
+static INCR: std::sync::Mutex<Vec<(PathBuf, Vec<typeset::Segment>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Take the previous segments cached for `path` (empty on first run).
+#[cfg(not(target_arch = "wasm32"))]
+fn incr_take(path: &Path) -> Vec<typeset::Segment> {
+    let Ok(mut g) = INCR.lock() else { return Vec::new() };
+    match g.iter().position(|(p, _)| p == path) {
+        Some(i) => std::mem::take(&mut g[i].1),
+        None => Vec::new(),
+    }
+}
+
+/// Store the newest segments for `path`, evicting oldest first.
+#[cfg(not(target_arch = "wasm32"))]
+fn incr_store(path: &Path, segs: Vec<typeset::Segment>) {
+    const MAX_PATHS: usize = 32;
+    let Ok(mut g) = INCR.lock() else { return };
+    g.retain(|(p, _)| p != path);
+    while g.len() >= MAX_PATHS {
+        g.remove(0);
+    }
+    g.push((path.to_path_buf(), segs));
+}
+
 /// Typeset a document body in-process and serialize a paginated PDF —
 /// letter pages, 1-inch margins, ~14pt leading. `Some((bytes, pages))`
 /// only when the body stays inside `typeset`'s text subset and every
 /// glyph exists in the font; otherwise the caller compiles for real.
 #[cfg(not(target_arch = "wasm32"))]
 fn native_doc_pdf(src: &str) -> Option<(Vec<u8>, u32)> {
+    native_doc_pdf_inner(src, &[]).map(|(bytes, pages, _)| (bytes, pages))
+}
+
+/// The file-backed variant used by `preview_file`: reuses unchanged
+/// segments from the previous pass for this path.
+#[cfg(not(target_arch = "wasm32"))]
+fn native_doc_pdf_incr(path: &Path, src: &str) -> Option<(Vec<u8>, u32)> {
+    let prev = incr_take(path);
+    let (bytes, pages, segs) = native_doc_pdf_inner(src, &prev)?;
+    incr_store(path, segs);
+    Some((bytes, pages))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_doc_pdf_inner(src: &str, prev: &[typeset::Segment]) -> Option<(Vec<u8>, u32, Vec<typeset::Segment>)> {
     let (reg, ital) = preview_fonts()?;
     let size = 11.0;
     let page_w = 612.0;
@@ -515,10 +559,10 @@ fn native_doc_pdf(src: &str) -> Option<(Vec<u8>, u32)> {
             typeset::Style::Regular => reg.width_pt(c, s),
         }
     };
-    let blocks = typeset::doc(src, size, text_w, &measure)?;
+    let segs = typeset::doc_segments(src, size, text_w, &measure, prev)?;
     // Every glyph must exist in its face — .notdef means the doc isn't
     // faithfully representable; fall back instead.
-    if !blocks_glyphs_ok(&blocks, &reg, ital_ref) {
+    if !blocks_glyphs_ok(segs.iter().flat_map(|s| s.blocks.iter()), &reg, ital_ref) {
         return None;
     }
 
@@ -538,12 +582,12 @@ fn native_doc_pdf(src: &str) -> Option<(Vec<u8>, u32)> {
     let mut note_h = 0.0f64;
     let nlead = leading * 0.85;
     let note_cap = (page_h - margin * 2.0) * 0.3;
-    for b in blocks {
+    for b in segs.iter().flat_map(|s| s.blocks.iter()) {
         match b {
             typeset::Block::Gap(g) => y -= g,
             typeset::Block::Note(nbs) => {
                 for nb in nbs {
-                    let cost = match &nb {
+                    let cost = match nb {
                         typeset::Block::Gap(g) => *g,
                         _ => nlead,
                     };
@@ -552,9 +596,9 @@ fn native_doc_pdf(src: &str) -> Option<(Vec<u8>, u32)> {
                     let fits = cost <= y - margin - leading * 0.5 - note_h && note_h + cost <= note_cap;
                     if fits {
                         note_h += cost;
-                        notes.push(nb);
+                        notes.push(nb.clone());
                     } else {
-                        pending.push(nb);
+                        pending.push(nb.clone());
                     }
                 }
             }
@@ -577,7 +621,7 @@ fn native_doc_pdf(src: &str) -> Option<(Vec<u8>, u32)> {
                 }
                 let base = if first { y - f.height } else { y - leading };
                 first = false;
-                draw_frag(&mut page, &f, base, margin, &reg, ital_ref, use_italic, &mut uni1, &mut uni2);
+                draw_frag(&mut page, f, base, margin, &reg, ital_ref, use_italic, &mut uni1, &mut uni2);
                 y = base;
             }
         }
@@ -588,7 +632,7 @@ fn native_doc_pdf(src: &str) -> Option<(Vec<u8>, u32)> {
     if let Some(it) = ital {
         doc.font("F2", it, uni2);
     }
-    Some((doc.save().ok()?, pages))
+    Some((doc.save().ok()?, pages, segs))
 }
 
 /// The web build keeps the external path only — no font filesystem.
@@ -597,9 +641,14 @@ fn native_pdf(_latex: &str) -> Option<Vec<u8>> {
     None
 }
 
-/// Wasm stub — no font filesystem or document preview.
+/// Wasm stubs — no font filesystem or document preview.
 #[cfg(target_arch = "wasm32")]
 fn native_doc_pdf(_src: &str) -> Option<(Vec<u8>, u32)> {
+    None
+}
+
+#[cfg(target_arch = "wasm32")]
+fn native_doc_pdf_incr(_path: &Path, _src: &str) -> Option<(Vec<u8>, u32)> {
     None
 }
 

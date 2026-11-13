@@ -368,3 +368,13 @@ widget) are tracked there — nothing in M0 depends on them.
   proposals (exact/replace/comment) with apply (confirmed) and reject
   actions; applied edits resync the buffer, mirrors and reparse.
   `suggest_title` localized across all 16 catalogs.
+
+- TASK-27 — dirty-region incremental typesetting: `doc_segments`
+  emits keyed segments per paragraph/heading/note/display/title.
+  The key hashes the unit stream — footnote `Sup` markers and
+  enumerate `Item` numbers are literal text by then, so renumbering
+  invalidates affected segments for free. `preview_file` caches
+  segments per path (32-entry LRU) and reuses unchanged blocks;
+  only dirty paragraphs pay the line breaker before repagination.
+  `doc()` is now `doc_segments(.., &[])` flattened. Tests: reuse
+  identity, renumbering invalidation, splice == fresh typeset.

@@ -566,7 +566,7 @@ pub fn math(src: &str, size: f64, measure: &dyn Fn(char, f64, Style) -> f64) -> 
 
 /// Vertical material the caller stacks: a `Line` advances by the
 /// leading, a `Gap` by its own amount.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Block {
     Line(Fragment),
     Gap(f64),
@@ -1345,13 +1345,102 @@ fn meta_units(arg: &str, size: f64, measure: &dyn Fn(char, f64, Style) -> f64) -
     Some(us)
 }
 
-/// Typeset a document body — paragraphs, `\section` headings, styled
-/// groups, lists, `$…$` inline math, `$$…$$`/`\[…\]`/`equation`
-/// display math, `\footnote`, `\maketitle` — into stackable lines.
-/// `\title`/`\author`/`\date` are captured from the preamble or body.
-/// Anything else outside the subset returns `None` and the caller
-/// falls back to the external engine. All widths flow through `measure`.
-pub fn doc(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64, Style) -> f64) -> Option<Vec<Block>> {
+/// One typeset segment — the blocks emitted for a single logical
+/// chunk (a paragraph, heading, display-math line, note, or the
+/// title block). `key` fingerprints the segment's semantic content:
+/// identical keys guarantee identical blocks, so a later pass over
+/// an edited source can reuse unchanged segments and re-break only
+/// the dirty ones (TeX's galley model — the paragraph is the unit
+/// of line breaking).
+#[derive(Debug, Clone)]
+pub struct Segment {
+    /// Content fingerprint — covers the units (chars, styles, item
+    /// markers, note numbers are all baked in by `stream`).
+    pub key: u64,
+    /// Layout blocks for the caller to stack and paginate.
+    pub blocks: Vec<Block>,
+}
+
+/// FNV-1a step — cheap, deterministic across runs (cache-safe).
+fn mix(h: u64, v: u64) -> u64 {
+    (h ^ v).wrapping_mul(0x100000001b3)
+}
+
+/// Hash a laid-out math fragment — items carry chars, styles and
+/// positions; identical fragments hash identically.
+fn frag_key(f: &Fragment, mut h: u64) -> u64 {
+    h = mix(h, f.width.to_bits());
+    for it in &f.items {
+        h = match it {
+            Item::Text { x, y, size, style, text } => {
+                let mut h = mix(h, 21);
+                h = mix(mix(mix(mix(h, x.to_bits()), y.to_bits()), size.to_bits()), *style as u64);
+                text.chars().fold(h, |h, c| mix(h, c as u64))
+            }
+            Item::Rule { x, y, w, h: rh } => mix(mix(mix(mix(mix(h, 22), x.to_bits()), y.to_bits()), w.to_bits()), rh.to_bits()),
+        };
+    }
+    h
+}
+
+/// Hash a unit stream — the semantic fingerprint of a paragraph or
+/// heading. Footnote markers and enumerate numbers are literal text
+/// by this point, so renumbering invalidates affected keys for free.
+fn units_key(units: &[Unit], tag: u64) -> u64 {
+    let mut h = mix(0xcbf29ce484222325, tag);
+    for u in units {
+        h = match u {
+            Unit::Word(cs) => cs.iter().fold(mix(h, 1), |h, (c, s)| mix(mix(h, *c as u64), *s as u64)),
+            Unit::Math(f) => frag_key(f, mix(h, 2)),
+            Unit::Glue { breakable } => mix(h, if *breakable { 3 } else { 4 }),
+            Unit::Break => mix(h, 5),
+            Unit::Indent(w) => mix(mix(h, 6), w.to_bits()),
+            Unit::Item { marker, depth } => {
+                let mut h = mix(h, 7);
+                if let Some(m) = marker {
+                    h = m.chars().fold(h, |h, c| mix(h, c as u64));
+                }
+                mix(h, *depth as u64)
+            }
+            Unit::Sup(t) => t.chars().fold(mix(h, 8), |h, c| mix(h, c as u64)),
+        };
+    }
+    h
+}
+
+/// Reuse a previous-pass segment whose key matches — each prev
+/// segment is consumed once so duplicate paragraphs can't alias.
+fn take_prev(prev: &[Segment], used: &mut [bool], key: u64) -> Option<Segment> {
+    for (i, s) in prev.iter().enumerate() {
+        if s.key == key && !used.get(i).copied().unwrap_or(true) {
+            if let Some(u) = used.get_mut(i) {
+                *u = true;
+            }
+            return Some(s.clone());
+        }
+    }
+    None
+}
+
+/// Close one segment: reuse `prev` blocks on a key hit, otherwise
+/// run `emit` and store the freshly-laid blocks.
+fn close_seg(segs: &mut Vec<Segment>, prev: &[Segment], used: &mut [bool], key: u64, emit: impl FnOnce(&mut Vec<Block>)) {
+    if let Some(s) = take_prev(prev, used, key) {
+        segs.push(s);
+        return;
+    }
+    let mut out = Vec::new();
+    emit(&mut out);
+    if !out.is_empty() {
+        segs.push(Segment { key, blocks: out });
+    }
+}
+
+/// Typeset a document body into keyed segments — see [`doc`] for the
+/// supported subset. `prev` is the previous pass's segments (empty on
+/// first run): segments whose content key survived the edit are
+/// reused unbroken; only dirty paragraphs pay the line breaker.
+pub fn doc_segments(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64, Style) -> f64, prev: &[Segment]) -> Option<Vec<Segment>> {
     if src.len() > MAX_DOC {
         return None;
     }
@@ -1381,47 +1470,65 @@ pub fn doc(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64, Style) 
         return None;
     }
     let cfg = ParaCfg { size, width, space_w: measure(' ', size, Style::Regular).max(size * 0.2), x_off: 0.0, measure };
-    let mut out = Vec::new();
+    let mut segs: Vec<Segment> = Vec::new();
+    let mut taken = vec![false; prev.len()];
     let mut para: Vec<Unit> = Vec::new();
     for ev in evs {
         match ev {
             Ev::Unit(u) => para.push(u),
-            Ev::Par => emit_para(&mut para, &mut out, &cfg),
+            Ev::Par => {
+                let key = units_key(&para, 1);
+                close_seg(&mut segs, prev, &mut taken, key, |out| emit_para(&mut para, out, &cfg));
+                para.clear(); // emit_para drains on the fresh path; reuse needs it too
+            }
             Ev::Heading(units, f) => {
-                emit_para(&mut para, &mut out, &cfg);
+                let key = units_key(&para, 1);
+                close_seg(&mut segs, prev, &mut taken, key, |out| emit_para(&mut para, out, &cfg));
+                para.clear(); // emit_para drains on the fresh path; reuse needs it too
+                let hkey = units_key(&units, mix(2, f.to_bits()));
                 let hs = size * f;
                 let hcfg = ParaCfg { size: hs, width, space_w: measure(' ', hs, Style::Regular).max(hs * 0.2), x_off: 0.0, measure };
-                if !units.is_empty() {
-                    out.push(Block::Gap(hs * 0.7));
-                    for (s, ce, _) in break_lines(&units, &hcfg, true) {
-                        out.push(Block::Line(emit_line(&units, s, ce, &hcfg, false, None)));
+                close_seg(&mut segs, prev, &mut taken, hkey, |out| {
+                    if !units.is_empty() {
+                        out.push(Block::Gap(hs * 0.7));
+                        for (s, ce, _) in break_lines(&units, &hcfg, true) {
+                            out.push(Block::Line(emit_line(&units, s, ce, &hcfg, false, None)));
+                        }
+                        out.push(Block::Gap(hs * 0.35));
                     }
-                    out.push(Block::Gap(hs * 0.35));
-                }
+                });
             }
             Ev::Note(us) => {
                 // Footnotes typeset at 85% into their own block — the
                 // caller stacks them at the bottom of the page.
+                let nkey = units_key(&us, 3);
                 let ns = size * 0.85;
                 let ncfg = ParaCfg { size: ns, width, space_w: measure(' ', ns, Style::Regular).max(ns * 0.2), x_off: 0.0, measure };
-                let mut us = us;
-                let mut nout = Vec::new();
-                emit_para(&mut us, &mut nout, &ncfg);
-                if !nout.is_empty() {
-                    out.push(Block::Note(nout));
-                }
+                close_seg(&mut segs, prev, &mut taken, nkey, |out| {
+                    let mut us = us;
+                    let mut nout = Vec::new();
+                    emit_para(&mut us, &mut nout, &ncfg);
+                    if !nout.is_empty() {
+                        out.push(Block::Note(nout));
+                    }
+                });
             }
             Ev::Math(mut f) => {
-                emit_para(&mut para, &mut out, &cfg);
-                let dx = ((width - f.width) / 2.0).max(0.0);
-                for it in &mut f.items {
-                    match it {
-                        Item::Text { x, .. } | Item::Rule { x, .. } => *x += dx,
+                let key = units_key(&para, 1);
+                close_seg(&mut segs, prev, &mut taken, key, |out| emit_para(&mut para, out, &cfg));
+                para.clear(); // emit_para drains on the fresh path; reuse needs it too
+                let mkey = frag_key(&f, mix(0xcbf29ce484222325, 4));
+                close_seg(&mut segs, prev, &mut taken, mkey, |out| {
+                    let dx = ((width - f.width) / 2.0).max(0.0);
+                    for it in &mut f.items {
+                        match it {
+                            Item::Text { x, .. } | Item::Rule { x, .. } => *x += dx,
+                        }
                     }
-                }
-                out.push(Block::Gap(size * 0.5));
-                out.push(Block::Line(f));
-                out.push(Block::Gap(size * 0.5));
+                    out.push(Block::Gap(size * 0.5));
+                    out.push(Block::Line(f));
+                    out.push(Block::Gap(size * 0.5));
+                });
             }
             Ev::Meta(idx, us) => {
                 if let Some(slot) = meta.get_mut(idx) {
@@ -1429,31 +1536,49 @@ pub fn doc(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64, Style) 
                 }
             }
             Ev::Maketitle => {
-                emit_para(&mut para, &mut out, &cfg);
-                if let Some(us) = meta[0].take() {
-                    let hs = size * 1.8;
-                    let hcfg = ParaCfg { size: hs, width, space_w: measure(' ', hs, Style::Regular).max(hs * 0.2), x_off: 0.0, measure };
-                    out.push(Block::Gap(hs * 0.5));
-                    for (s, ce, _) in break_lines(&us, &hcfg, true) {
-                        out.push(Block::Line(emit_line(&us, s, ce, &hcfg, false, None)));
+                let key = units_key(&para, 1);
+                close_seg(&mut segs, prev, &mut taken, key, |out| emit_para(&mut para, out, &cfg));
+                para.clear(); // emit_para drains on the fresh path; reuse needs it too
+                let tkey = meta.iter().flatten().fold(mix(0xcbf29ce484222325, 5), |h, us| units_key(us, h));
+                close_seg(&mut segs, prev, &mut taken, tkey, |out| {
+                    if let Some(us) = meta[0].take() {
+                        let hs = size * 1.8;
+                        let hcfg = ParaCfg { size: hs, width, space_w: measure(' ', hs, Style::Regular).max(hs * 0.2), x_off: 0.0, measure };
+                        out.push(Block::Gap(hs * 0.5));
+                        for (s, ce, _) in break_lines(&us, &hcfg, true) {
+                            out.push(Block::Line(emit_line(&us, s, ce, &hcfg, false, None)));
+                        }
+                        out.push(Block::Gap(hs * 0.3));
                     }
-                    out.push(Block::Gap(hs * 0.3));
-                }
-                for m in meta.iter_mut().skip(1) {
-                    if let Some(us) = m.take() {
-                        let mut us = us;
-                        out.push(Block::Gap(size * 0.3));
-                        emit_para(&mut us, &mut out, &cfg);
+                    for m in meta.iter_mut().skip(1) {
+                        if let Some(us) = m.take() {
+                            let mut us = us;
+                            out.push(Block::Gap(size * 0.3));
+                            emit_para(&mut us, out, &cfg);
+                        }
                     }
-                }
+                });
             }
         }
     }
-    emit_para(&mut para, &mut out, &cfg);
-    if out.iter().all(|b| matches!(b, Block::Gap(_))) {
+    let key = units_key(&para, 1);
+    close_seg(&mut segs, prev, &mut taken, key, |out| emit_para(&mut para, out, &cfg));
+    para.clear();
+    if segs.iter().all(|s| s.blocks.iter().all(|b| matches!(b, Block::Gap(_)))) {
         return None;
     }
-    Some(out)
+    Some(segs)
+}
+
+/// Typeset a document body — paragraphs, `\section` headings, styled
+/// groups, lists, `$…$` inline math, `$$…$$`/`\[…\]`/`equation`
+/// display math, `\footnote`, `\maketitle` — into stackable lines.
+/// `\title`/`\author`/`\date` are captured from the preamble or body.
+/// Anything else outside the subset returns `None` and the caller
+/// falls back to the external engine. All widths flow through `measure`.
+pub fn doc(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64, Style) -> f64) -> Option<Vec<Block>> {
+    let segs = doc_segments(src, size, width, measure, &[])?;
+    Some(segs.into_iter().flat_map(|s| s.blocks).collect())
 }
 
 #[cfg(test)]
@@ -1704,5 +1829,40 @@ mod tests {
         for junk in ["", "\\section", "\\section{", "$", "$x", "\\emph{", "}}", "\\begin{document}", "a".repeat(20_000).as_str()] {
             let _ = doc(junk, 10.0, 400.0, &fixed);
         }
+    }
+
+    #[test]
+    fn segments_reuse_unchanged_paragraphs() {
+        let src_a = "First paragraph stays.\n\nSecond paragraph is edited.\n\nThird paragraph stays too.\n\n";
+        let src_b = "First paragraph stays.\n\nSecond paragraph was edited!\n\nThird paragraph stays too.\n\n";
+        let segs_a = doc_segments(src_a, 10.0, 400.0, &fixed, &[]).unwrap();
+        assert!(segs_a.len() >= 3, "{:?}", segs_a.len());
+        let segs_b = doc_segments(src_b, 10.0, 400.0, &fixed, &segs_a).unwrap();
+        assert_eq!(segs_a.len(), segs_b.len());
+        // Paragraphs 1 and 3 are reused — same key, same blocks.
+        assert_eq!(segs_a[0].key, segs_b[0].key);
+        assert_eq!(segs_a[2].key, segs_b[2].key);
+        assert_eq!(format!("{:?}", segs_a[0].blocks), format!("{:?}", segs_b[0].blocks));
+        // The edited paragraph re-broke — different key.
+        assert_ne!(segs_a[1].key, segs_b[1].key);
+        // Spliced output equals a fresh typeset of the new source.
+        let flat: Vec<Block> = segs_b.into_iter().flat_map(|s| s.blocks).collect();
+        let fresh = doc(src_b, 10.0, 400.0, &fixed).unwrap();
+        assert_eq!(format!("{flat:?}"), format!("{fresh:?}"));
+    }
+
+    #[test]
+    fn segments_renumbering_invalidates() {
+        // Inserting a footnote earlier renumbers later markers — the
+        // affected segments must NOT be reused.
+        let src_a = "Intro text.\n\nA note\\footnote{first} here.\n\nAnother note\\footnote{second} there.\n\n";
+        let src_b = "Intro text.\n\nNew note\\footnote{zero} plus a note\\footnote{first} here.\n\nAnother note\\footnote{second} there.\n\n";
+        let segs_a = doc_segments(src_a, 10.0, 400.0, &fixed, &[]).unwrap();
+        let segs_b = doc_segments(src_b, 10.0, 400.0, &fixed, &segs_a).unwrap();
+        // Para 1 unchanged → reused; para 2 (new note + renumbered
+        // marker text) must differ.
+        assert_eq!(segs_a[0].key, segs_b[0].key);
+        let keys_a: Vec<u64> = segs_a.iter().map(|s| s.key).collect();
+        assert!(segs_b.iter().skip(1).any(|s| !keys_a.contains(&s.key)));
     }
 }
