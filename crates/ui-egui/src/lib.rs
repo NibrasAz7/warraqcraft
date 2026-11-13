@@ -636,6 +636,9 @@ pub struct WarraqApp {
     external_changed: bool,
     external_modal: bool,
     external_checked_at: f64,
+    /// `doc.suggest` ids the user dismissed without acting — the review
+    /// window re-opens when a new proposal id arrives.
+    suggest_dismissed: Vec<String>,
     /// Opt-in `--control FILE` TCP channel, polled in `logic`.
     #[cfg(not(target_arch = "wasm32"))]
     control: Option<control::Control>,
@@ -779,6 +782,7 @@ impl WarraqApp {
             external_changed: false,
             external_modal: false,
             external_checked_at: f64::NEG_INFINITY,
+            suggest_dismissed: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             control: None,
         };
@@ -3519,6 +3523,70 @@ impl WarraqApp {
         self.last_edit = now;
     }
 
+    /// Pending `doc.suggest` proposals — a review window that appears
+    /// whenever the session carries anchored suggestions (proposed by
+    /// agents over MCP/CLI). Closing it hides only the already-seen
+    /// set; new proposals re-open it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn suggest_modal(&mut self, ctx: &egui::Context) {
+        let pending: Vec<(String, String, Option<String>, Option<String>)> =
+            self.session.suggestions().iter().map(|g| (g.id.clone(), g.exact.clone(), g.replace.clone(), g.comment.clone())).collect();
+        self.suggest_dismissed.retain(|id| pending.iter().any(|(pid, ..)| pid == id));
+        let show: Vec<_> = pending.iter().filter(|(id, ..)| !self.suggest_dismissed.contains(id)).cloned().collect();
+        if show.is_empty() {
+            return;
+        }
+        let s = self.s();
+        let mut act: Option<(bool, String)> = None;
+        let mut open = true;
+        egui::Window::new(lang::view(s.suggest_title)).collapsible(false).resizable(true).default_size([430.0, 240.0]).open(&mut open).show(
+            ctx,
+            |ui| {
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for (id, exact, replace, comment) in &show {
+                        ui.group(|ui| {
+                            ui.label(egui::RichText::new(exact).size(10.5).monospace());
+                            if let Some(r) = replace {
+                                ui.label(egui::RichText::new(format!("→ {r}")).size(10.5).monospace().color(theme::pal().accent));
+                            }
+                            if let Some(c) = comment {
+                                ui.label(egui::RichText::new(c).size(10.0).color(theme::pal().muted));
+                            }
+                            ui.horizontal(|ui| {
+                                if ui.button(lang::view(s.ai_repair_apply)).clicked() {
+                                    act = Some((true, id.clone()));
+                                }
+                                if ui.button(lang::view(s.ai_reject)).clicked() {
+                                    act = Some((false, id.clone()));
+                                }
+                            });
+                        });
+                    }
+                });
+            },
+        );
+        if !open {
+            self.suggest_dismissed.extend(show.iter().map(|(id, ..)| id.clone()));
+        }
+        if let Some((apply, id)) = act {
+            let (cmd, params) = if apply {
+                ("doc.suggest.apply", serde_json::json!({"id": id, "confirm": true}))
+            } else {
+                ("doc.suggest.reject", serde_json::json!({"id": id}))
+            };
+            match self.session.execute(cmd, &params) {
+                Ok(_) => {
+                    self.mirrors = None;
+                    self.src_stamp = self.src_stamp.wrapping_add(1);
+                    self.reparse();
+                    self.folded.clear();
+                    self.last_edit = ctx.input(|i| i.time);
+                }
+                Err(e) => self.status = lang::fmt(self.s().status_failed, &[("context", cmd), ("error", &e.to_string())]),
+            }
+        }
+    }
+
     /// Modal: create a file or folder in the project tree.
     fn new_entry_modal(&mut self, ctx: &egui::Context) {
         let s = self.s();
@@ -5288,7 +5356,9 @@ fn file_declares_document(path: &Path) -> bool {
 /// page into an `egui::ColorImage` with `hayro`.
 #[cfg(not(target_arch = "wasm32"))]
 fn compile_and_render(path: &Path, engine: Option<&str>) -> CompileJob {
-    let report = warraqcraft_engine::compile_file_with(path, None, engine).map_err(|e| e.to_string())?;
+    // The shared doc.preview pipeline — native typeset when the body
+    // is in-subset (report.engine "warraqcraft"), external otherwise.
+    let (report, _native, _cached) = warraqcraft_engine::preview::preview_file(path, engine).map_err(|e| e.to_string())?;
     let Some(pdf_path) = &report.pdf else { return Ok((report, Vec::new())) };
     render_pdf(pdf_path).map(|images| (report, images))
 }
@@ -5537,6 +5607,7 @@ impl eframe::App for WarraqApp {
             self.ai_modal(&ctx);
             self.repo_modal(&ctx);
             self.external_modal(&ctx);
+            self.suggest_modal(&ctx);
         }
         #[cfg(not(target_arch = "wasm32"))]
         {

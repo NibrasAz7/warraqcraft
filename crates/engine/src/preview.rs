@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::{compile_file, CompileError, EngineError, Session};
+use crate::{compile_file, compile_file_with, CompileError, CompileReport, EngineError, Session};
 
 /// Largest accepted fragment — previews are small by definition.
 const MAX_LATEX: usize = 64 * 1024;
@@ -147,6 +147,22 @@ pub fn run(session: &Session, params: &Value) -> Result<Value, EngineError> {
 /// document, so callers always get a PDF or an honest error.
 pub fn doc_preview(session: &Session, params: &Value) -> Result<Value, EngineError> {
     const MAX_SRC: usize = 512 * 1024;
+    // File-backed documents take the shared pipeline — the same one
+    // the UI's preview pane calls — so provenance and cache agree.
+    if params.get("latex").is_none() {
+        if let Some(p) = session.path() {
+            let engine = params.get("engine").and_then(Value::as_str);
+            let (report, native, cached) = preview_file(p, engine)?;
+            return Ok(json!({
+                "pdf": report.pdf.as_ref().map(|p| p.display().to_string()),
+                "pages": report.pages,
+                "cached": cached,
+                "native": native,
+                "log": char_tail(&report.log_tail, MAX_LOG_CHARS),
+                "errors": report.errors.iter().map(|e: &CompileError| json!({"line": e.line, "message": e.message})).collect::<Vec<_>>(),
+            }));
+        }
+    }
     let src = match params.get("latex").and_then(Value::as_str) {
         Some(s) if s.len() > MAX_SRC => return Err(EngineError::BadParam("latex")),
         Some(s) => s.to_string(),
@@ -168,9 +184,9 @@ pub fn doc_preview(session: &Session, params: &Value) -> Result<Value, EngineErr
     let okmark = dir.join(format!("d{h:016x}.ok"));
     let built = dir.join(crate::BUILD_DIR).join(format!("d{h:016x}.pdf"));
     if okmark.is_file() && built.is_file() {
-        // Mark format: "n<pages>" native, "e<pages>" external.
+        // Mark format: "n<pages> <engine>" native, "e<…>" external.
         let mark = std::fs::read_to_string(&okmark).unwrap_or_default();
-        let pages = mark.get(1..).and_then(|t| t.trim().parse::<u32>().ok());
+        let pages = mark.get(1..).and_then(|s| s.split_whitespace().next()).and_then(|t| t.parse::<u32>().ok());
         return Ok(
             json!({"pdf": built.display().to_string(), "pages": pages, "cached": true, "native": mark.starts_with('n'), "errors": [], "log": ""}),
         );
@@ -178,7 +194,7 @@ pub fn doc_preview(session: &Session, params: &Value) -> Result<Value, EngineErr
     if let Some((bytes, pages)) = native_doc_pdf(&src) {
         std::fs::create_dir_all(built.parent().unwrap_or(&dir))?;
         craft_atomic::atomic_write(&built, &bytes)?;
-        let _ = craft_atomic::atomic_write(&okmark, format!("n{pages}").as_bytes());
+        let _ = craft_atomic::atomic_write(&okmark, format!("n{pages} warraqcraft").as_bytes());
         prune_warm(&dir);
         return Ok(json!({"pdf": built.display().to_string(), "pages": pages, "cached": false, "native": true, "errors": [], "log": ""}));
     }
@@ -194,7 +210,7 @@ pub fn doc_preview(session: &Session, params: &Value) -> Result<Value, EngineErr
     };
     let report = compile_file(&scratch, owned_src)?;
     if report.pdf.is_some() {
-        let _ = craft_atomic::atomic_write(&okmark, format!("e{}", report.pages.unwrap_or(1)).as_bytes());
+        let _ = craft_atomic::atomic_write(&okmark, format!("e{} {}", report.pages.unwrap_or(1), report.engine).as_bytes());
         prune_warm(&dir);
     }
     Ok(json!({
@@ -205,6 +221,66 @@ pub fn doc_preview(session: &Session, params: &Value) -> Result<Value, EngineErr
         "log": char_tail(&report.log_tail, MAX_LOG_CHARS),
         "errors": report.errors.iter().map(|e: &CompileError| json!({"line": e.line, "message": e.message})).collect::<Vec<_>>(),
     }))
+}
+
+/// File-based shared pipeline for `doc.preview` and the UI's preview
+/// pane: warm cache → native `typeset` → external compile. Returns
+/// `(report, native, cached)`; `report.engine` is `"warraqcraft"` on
+/// the native path so provenance shows in status lines. The `.ok`
+/// cache mark stores `kind pages engine` so hits report faithfully.
+pub fn preview_file(path: &Path, engine: Option<&str>) -> Result<(CompileReport, bool, bool), EngineError> {
+    const MAX_SRC: usize = 512 * 1024;
+    let meta = std::fs::metadata(path)?;
+    if meta.len() > MAX_SRC as u64 {
+        return Err(EngineError::BadParam("latex"));
+    }
+    let src = String::from_utf8_lossy(&std::fs::read(path)?).into_owned();
+    if src.trim().is_empty() {
+        return Err(EngineError::BadParam("latex"));
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
+    let dir = parent.join(crate::BUILD_DIR).join(PREVIEW_DIR);
+    std::fs::create_dir_all(&dir)?;
+    let h = frag_hash(src.as_bytes());
+    let okmark = dir.join(format!("d{h:016x}.ok"));
+    let built = dir.join(crate::BUILD_DIR).join(format!("d{h:016x}.pdf"));
+    if okmark.is_file() && built.is_file() {
+        let mark = std::fs::read_to_string(&okmark).unwrap_or_default();
+        let native = mark.starts_with('n');
+        let mut it = mark.get(1..).unwrap_or_default().split_whitespace();
+        let pages = it.next().and_then(|t| t.parse::<u32>().ok());
+        let engine_name = it.next().unwrap_or(if native { "warraqcraft" } else { "system" }).to_string();
+        return Ok((
+            CompileReport { engine: engine_name, pdf: Some(built), pages, errors: Vec::new(), warnings: Vec::new(), log_tail: String::new() },
+            native,
+            true,
+        ));
+    }
+    if let Some((bytes, pages)) = native_doc_pdf(&src) {
+        std::fs::create_dir_all(built.parent().unwrap_or(&dir))?;
+        craft_atomic::atomic_write(&built, &bytes)?;
+        let _ = craft_atomic::atomic_write(&okmark, format!("n{pages} warraqcraft").as_bytes());
+        prune_warm(&dir);
+        return Ok((
+            CompileReport {
+                engine: "warraqcraft".to_string(),
+                pdf: Some(built),
+                pages: Some(pages),
+                errors: Vec::new(),
+                warnings: Vec::new(),
+                log_tail: String::new(),
+            },
+            true,
+            false,
+        ));
+    }
+    let report = compile_file_with(path, Some(&src), engine)?;
+    if report.pdf.is_some() {
+        let _ = craft_atomic::atomic_write(&okmark, format!("e{} {}", report.pages.unwrap_or(1), report.engine).as_bytes());
+        prune_warm(&dir);
+    }
+    Ok((report, false, false))
 }
 
 // ---------- native typeset path ----------

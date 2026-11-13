@@ -358,3 +358,13 @@ widget) are tracked there — nothing in M0 depends on them.
   components pulled in by closure, cmap regenerated (format 4 + 12),
   head/hhea/maxp patched, checksum recomputed. Whole-TTF fallback on
   anything unexpected. Preview PDFs 2.2MB → ~90KB.
+
+- TASK-26 — `doc.preview` goes live in the UI + `doc.suggest` review
+  surface: `preview_file` is the shared pipeline (warm cache → native
+  typeset → external compile) used by both the engine command and the
+  studio preview pane — in-subset documents now preview without any
+  external TeX. Cache marks record provenance (`n/e pages engine`).
+  A movable/resizable Suggestions window lists pending `doc.suggest`
+  proposals (exact/replace/comment) with apply (confirmed) and reject
+  actions; applied edits resync the buffer, mirrors and reparse.
+  `suggest_title` localized across all 16 catalogs.
