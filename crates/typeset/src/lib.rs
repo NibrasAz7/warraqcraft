@@ -636,6 +636,15 @@ enum Ev {
     /// `\bibliography{…}`/`\printbibliography` — the References block
     /// prints here; needs a `Cites` backend or the doc falls back.
     Biblio,
+    /// `\begin{thebibliography}` — emits an unnumbered References
+    /// heading; entries follow as `BibItem`s.
+    BibStart,
+    /// `\bibitem{key}` — the numbering pass records `key → n` and
+    /// rewrites this to a hanging `Unit::Item` marker `[n]`.
+    BibItem {
+        key: String,
+        marker: Option<String>,
+    },
 }
 
 const MAX_DOC: usize = 512 * 1024;
@@ -737,6 +746,7 @@ fn stream(
     let mut evs: Vec<Ev> = Vec::new();
     let mut units: Vec<Unit> = Vec::new();
     let mut lists: Vec<ListSt> = Vec::new();
+    let mut bibenv = false;
     let mut note_n: u32 = 0;
     let mut i = pos;
     while i < chars.len() {
@@ -929,6 +939,27 @@ fn stream(
                         evs.push(Ev::Biblio);
                     }
                     "printbibliography" if top => evs.push(Ev::Biblio),
+                    "bibitem" if bibenv => {
+                        // Optional [label], then {key}. Entries begin a
+                        // new hanging paragraph, like \item.
+                        let mut mark = None;
+                        if chars.get(i) == Some(&'[') {
+                            let mut j = i + 1;
+                            while j < chars.len() && chars[j] != ']' && j - i <= 128 {
+                                j += 1;
+                            }
+                            if chars.get(j) == Some(&']') {
+                                mark = Some(chars[i + 1..j].iter().collect());
+                                i = j + 1;
+                            }
+                        }
+                        let key = braced_name(chars, &mut i)?;
+                        if units.iter().any(|u| !matches!(u, Unit::Glue { .. } | Unit::Break)) {
+                            evs.extend(units.drain(..).map(Ev::Unit));
+                            evs.push(Ev::Par);
+                        }
+                        evs.push(Ev::BibItem { key, marker: mark });
+                    }
                     // `\ref`/`\eqref` resolve to the label's number;
                     // the rest keep TeX's own `??` (pageref needs the
                     // paginated result, which typesetting can't know).
@@ -962,6 +993,18 @@ fn stream(
                         match env.as_str() {
                             "itemize" | "description" => lists.push(ListSt { ordered: false, n: 0 }),
                             "enumerate" => lists.push(ListSt { ordered: true, n: 0 }),
+                            // thebibliography{widest-label} — the arg
+                            // only sizes labels; entries come from
+                            // \bibitem. Nested is meaningless.
+                            "thebibliography" if !bibenv => {
+                                bibenv = true;
+                                let _ = braced_name(chars, &mut i)?;
+                                if units.iter().any(|u| !matches!(u, Unit::Glue { .. } | Unit::Break)) {
+                                    evs.extend(units.drain(..).map(Ev::Unit));
+                                    evs.push(Ev::Par);
+                                }
+                                evs.push(Ev::BibStart);
+                            }
                             // Display-math environments — the body goes
                             // through the math layout, centered as a block.
                             "equation" | "equation*" | "displaymath" | "math" => {
@@ -994,6 +1037,17 @@ fn stream(
                     }
                     "end" if top => {
                         let env = braced_name(chars, &mut i)?;
+                        if env == "thebibliography" {
+                            if !bibenv {
+                                return None;
+                            }
+                            bibenv = false;
+                            if units.iter().any(|u| !matches!(u, Unit::Glue { .. } | Unit::Break)) {
+                                evs.extend(units.drain(..).map(Ev::Unit));
+                                evs.push(Ev::Par);
+                            }
+                            continue;
+                        }
                         let ok = match (lists.pop(), env.as_str()) {
                             (Some(l), "itemize" | "description") => !l.ordered,
                             (Some(l), "enumerate") => l.ordered,
@@ -1497,16 +1551,24 @@ fn close_seg(segs: &mut Vec<Segment>, prev: &[Segment], used: &mut [bool], key: 
     }
 }
 
-/// Rewrite every `Unit::Cite` in place — numbered `[n]` markers when
-/// a [`Cites`] backend is wired, `[key]` literals otherwise. Runs
-/// between parse and layout so breaking/keys see resolved text and
-/// citation-order numbering falls out of the left-to-right walk.
-fn resolve_cites(units: &mut [Unit], cites: &mut Option<&mut dyn Cites>) {
+/// Rewrite every `Unit::Cite` in place — `\bibitem` numbers first
+/// (they're the printed labels), then a [`Cites`] backend's number,
+/// `[?]` for unknown keys when resolution exists at all, `[key]`
+/// literals when it doesn't. Runs between parse and layout so
+/// breaking/keys see resolved text.
+fn resolve_cites(units: &mut [Unit], cites: &mut Option<&mut dyn Cites>, bibn: &std::collections::HashMap<String, usize>) {
     for u in units.iter_mut() {
         if let Unit::Cite(ks) = u {
-            let inner = match cites.as_deref_mut() {
-                Some(r) => ks.iter().map(|k| r.num(k).map_or_else(|| "?".to_string(), |n| n.to_string())).collect::<Vec<_>>().join(","),
-                None => ks.join(","),
+            let inner = if !bibn.is_empty() || cites.is_some() {
+                ks.iter()
+                    .map(|k| match bibn.get(k).copied().or_else(|| cites.as_deref_mut().and_then(|r| r.num(k))) {
+                        Some(n) => n.to_string(),
+                        None => "?".to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            } else {
+                ks.join(",")
             };
             let text = format!("[{inner}]");
             *u = Unit::Word(text.chars().map(|c| (c, Style::Regular)).collect());
@@ -1514,13 +1576,22 @@ fn resolve_cites(units: &mut [Unit], cites: &mut Option<&mut dyn Cites>) {
     }
 }
 
-/// Two sweeps over the event stream: number sections and equation
-/// environments, collect every `\label` against the enclosing number,
-/// then rewrite `\ref`/`\eqref` units to it (`??` when unknown).
-/// Runs pre-layout like [`resolve_cites`], so segment keys and reuse
-/// see the final text — a renumbering edit invalidates honestly.
-fn resolve_refs(evs: &mut [Ev]) {
-    let mut labels: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+/// Numbered constructs in a document — filled by [`number_pass`]:
+/// `\label` → enclosing number, `\bibitem` key → its position.
+#[derive(Default)]
+struct Nums {
+    labels: std::collections::HashMap<String, String>,
+    bib: std::collections::HashMap<String, usize>,
+}
+
+/// Sweep over the event stream assigning numbers: section headings
+/// print theirs (like `\section`), equation envs get `(n)`, `\label`
+/// anchors map to the enclosing number, and `\bibitem`s take their
+/// ordinal — the event rewriting to a hanging `[n]` item so the fold
+/// needs no special case. Forward refs resolve because the whole
+/// sweep precedes layout, keeping segment keys honest.
+fn number_pass(evs: &mut [Ev]) -> Nums {
+    let mut nums = Nums::default();
     let (mut sec, mut sub, mut sss, mut eqn) = (0u32, 0u32, 0u32, 0u32);
     let mut cur = String::new();
     for ev in evs.iter_mut() {
@@ -1547,7 +1618,7 @@ fn resolve_refs(evs: &mut [Ev]) {
                 *us = nu;
                 for u in us.iter() {
                     if let Unit::Label(k) = u {
-                        labels.insert(k.clone(), cur.clone());
+                        nums.labels.insert(k.clone(), cur.clone());
                     }
                 }
             }
@@ -1556,19 +1627,32 @@ fn resolve_refs(evs: &mut [Ev]) {
                 *n = eqn;
                 cur = eqn.to_string();
             }
+            Ev::BibItem { key, marker } => {
+                let n = nums.bib.len() + 1;
+                nums.bib.insert(key.clone(), n);
+                cur = n.to_string();
+                let mark = marker.take().unwrap_or_else(|| format!("[{n}]"));
+                *ev = Ev::Unit(Unit::Item { marker: Some(mark), depth: 1 });
+            }
             Ev::Unit(Unit::Label(k)) => {
-                labels.insert(k.clone(), cur.clone());
+                nums.labels.insert(k.clone(), cur.clone());
             }
             Ev::Note(us) | Ev::Meta(_, us) => {
                 for u in us.iter() {
                     if let Unit::Label(k) = u {
-                        labels.insert(k.clone(), cur.clone());
+                        nums.labels.insert(k.clone(), cur.clone());
                     }
                 }
             }
             _ => {}
         }
     }
+    nums
+}
+
+/// Second sweep — rewrite `\ref`/`\eqref` units to their label's
+/// number (`??` when unknown, matching TeX's own rendering).
+fn ref_pass(evs: &mut [Ev], labels: &std::collections::HashMap<String, String>) {
     for ev in evs.iter_mut() {
         let us: &mut [Unit] = match ev {
             Ev::Unit(u) => std::slice::from_mut(u),
@@ -1627,14 +1711,17 @@ pub fn doc_segments(
     if used != chars.len() {
         return None;
     }
+    // Numbering first — \bibitem positions feed citation markers,
+    // then labels/refs resolve against the same sweep.
+    let nums = number_pass(&mut evs);
     for ev in &mut evs {
         match ev {
-            Ev::Unit(u) => resolve_cites(std::slice::from_mut(u), &mut cites),
-            Ev::Heading(us, _) | Ev::Note(us) | Ev::Meta(_, us) => resolve_cites(us, &mut cites),
+            Ev::Unit(u) => resolve_cites(std::slice::from_mut(u), &mut cites, &nums.bib),
+            Ev::Heading(us, _) | Ev::Note(us) | Ev::Meta(_, us) => resolve_cites(us, &mut cites, &nums.bib),
             _ => {}
         }
     }
-    resolve_refs(&mut evs);
+    ref_pass(&mut evs, &nums.labels);
     let cfg = ParaCfg { size, width, space_w: measure(' ', size, Style::Regular).max(size * 0.2), x_off: 0.0, measure };
     let mut segs: Vec<Segment> = Vec::new();
     let mut taken = vec![false; prev.len()];
@@ -1760,6 +1847,26 @@ pub fn doc_segments(
                     }
                 });
             }
+            Ev::BibStart => {
+                // An unnumbered References heading — entries arrive as
+                // hanging `[n]` items from the BibItem rewrites.
+                let key = units_key(&para, 1);
+                close_seg(&mut segs, prev, &mut taken, key, |out| emit_para(&mut para, out, &cfg));
+                para.clear();
+                let hs = size * 1.4;
+                let hcfg = ParaCfg { size: hs, width, space_w: measure(' ', hs, Style::Regular).max(hs * 0.2), x_off: 0.0, measure };
+                close_seg(&mut segs, prev, &mut taken, mix(0xcbf29ce484222325, 7), |out| {
+                    let heading: Vec<Unit> = vec![Unit::Word("References".chars().map(|c| (c, Style::Regular)).collect())];
+                    out.push(Block::Gap(hs * 0.7));
+                    for (s, ce, _) in break_lines(&heading, &hcfg, true) {
+                        out.push(Block::Line(emit_line(&heading, s, ce, &hcfg, false, None)));
+                    }
+                    out.push(Block::Gap(hs * 0.35));
+                });
+            }
+            // Rewritten to a `Unit::Item` by number_pass — unreachable
+            // here, kept so the match stays exhaustive.
+            Ev::BibItem { .. } => {}
         }
     }
     let key = units_key(&para, 1);
@@ -2134,6 +2241,27 @@ mod tests {
         let all2 = texts(&doc(src2, 10.0, 400.0, &fixed).unwrap());
         assert!(all2.contains("|(1)|") && all2.contains("|(2)|"), "{all2}");
         assert!(all2.contains("??"), "{all2}");
+    }
+
+    #[test]
+    fn thebibliography_numbers_and_resolves() {
+        let src = "Inline \\cite{b2} and \\cite{b1}.\n\n\\begin{thebibliography}{9}\n\\bibitem{b1} First entry text.\n\\bibitem{b2} Second entry text.\n\\end{thebibliography}\n";
+        let blocks = doc(src, 10.0, 400.0, &fixed).unwrap();
+        let mut all = String::new();
+        for b in &blocks {
+            if let Block::Line(f) = b {
+                for i in &f.items {
+                    if let Item::Text { text, .. } = i {
+                        all.push_str(text);
+                        all.push('|');
+                    }
+                }
+            }
+        }
+        // \cite{b2} → [2], \cite{b1} → [1] — bibitem order, not use order.
+        assert!(all.contains("[2]") && all.contains("[1]"), "{all}");
+        assert!(all.contains("References"), "{all}");
+        assert!(all.contains("First|entry|text") && all.contains("Second|entry|text"), "{all}");
     }
 
     #[test]

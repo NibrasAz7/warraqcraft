@@ -401,3 +401,13 @@ widget) are tracked there — nothing in M0 depends on them.
   `??`. `\pageref` stays `??` (page numbers need pagination the
   typeset layer can't see — honest limit). Unnumbered `$$…$$` and
   `equation*` don't consume the counter.
+- TASK-30 — `thebibliography` environment: `\begin{thebibliography}`
+  emits an unnumbered "References" heading, `\bibitem{key}` collects
+  a citeable number in document order and is rewritten (in the same
+  pre-layout pass as labels) to a hanging `Unit::Item` with a `[n]`
+  marker — reusing the list machinery for wrap indentation.
+  `\cite{key}` consults the bibitem table before the `.bib`
+  `Cites` backend, matching TeX's precedence; unknown keys still
+  print `?`. The old `resolve_refs` was split into `number_pass`
+  (collects labels + bibitem numbers, returns both maps) and
+  `ref_pass` so cite and ref resolution share one numbering sweep.
