@@ -378,3 +378,16 @@ widget) are tracked there — nothing in M0 depends on them.
   only dirty paragraphs pay the line breaker before repagination.
   `doc()` is now `doc_segments(.., &[])` flattened. Tests: reuse
   identity, renumbering invalidation, splice == fresh typeset.
+
+- TASK-28 — citation resolution + native References: `Unit::Cite`
+  replaces the literal `[key]` word; a post-parse pass rewrites it
+  left-to-right through a new `typeset::Cites` trait (unsrt — first
+  use order, unknown keys render `?`). `\bibliography{}`/
+  `\printbibliography` emit `Ev::Biblio` → a References heading plus
+  hanging-indent entries from `Cites::entries`. Engine `EngineCites`
+  discovers `.bib` files from `\bibliography{..}`/`\addbibresource{..}`
+  relative to the document, parses via `texparse::parse_bib` (4 MiB
+  cap, ≤16 files), formats `Author. Title. Venue, Year.` Declared-
+  but-unreadable `.bib` → `None` → honest external fallback, same as
+  a missing resolver. Verified in a real PDF: `[1]`, `[2,?]`,
+  memoized re-cite, printed References block.

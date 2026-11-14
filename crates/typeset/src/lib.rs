@@ -594,6 +594,20 @@ enum Unit {
     Item { marker: Option<String>, depth: u32 },
     /// Raised marker text — footnote reference numbers.
     Sup(String),
+    /// `\cite` keys — resolved to `[n]` markers (or `[key]` literals)
+    /// between parse and layout, so downstream never sees this.
+    Cite(Vec<String>),
+}
+
+/// Citation backend the caller supplies — unsrt semantics: keys are
+/// numbered in order of first use, and `entries` yields the formatted
+/// reference strings for the bibliography block in printed order.
+pub trait Cites {
+    /// The printed number for a `.bib` key — `None` for unknown keys
+    /// (rendered `?`, like an undefined LaTeX citation).
+    fn num(&mut self, key: &str) -> Option<usize>;
+    /// Formatted reference entries in printed order (`[1] …`, `[2] …`).
+    fn entries(&self) -> Vec<String>;
 }
 
 /// A parse event: inline content, a paragraph boundary, or a heading.
@@ -609,6 +623,9 @@ enum Ev {
     Maketitle,
     /// `\title`/`\author`/`\date` — stored until `\maketitle`.
     Meta(usize, Vec<Unit>),
+    /// `\bibliography{…}`/`\printbibliography` — the References block
+    /// prints here; needs a `Cites` backend or the doc falls back.
+    Biblio,
 }
 
 const MAX_DOC: usize = 512 * 1024;
@@ -877,8 +894,8 @@ fn stream(
                     "TeX" => push_word(&mut units, "TeX"),
                     "newline" => units.push(Unit::Break),
                     "cite" | "citep" | "citet" | "parencite" | "textcite" | "footcite" | "citeyear" | "citeauthor" => {
-                        // Optional [..] args (up to two), then {key} —
-                        // rendered as the literal key until texbib lands.
+                        // Optional [..] args (up to two), then {keys} —
+                        // a Cite unit resolved to `[n]` markers later.
                         for _ in 0..2 {
                             if chars.get(i) == Some(&'[') {
                                 let mut j = i + 1;
@@ -890,9 +907,18 @@ fn stream(
                                 }
                             }
                         }
-                        let key = braced_name(chars, &mut i)?;
-                        push_word(&mut units, &format!("[{key}]"));
+                        let keys = braced_name(chars, &mut i)?;
+                        let ks: Vec<String> = keys.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).take(32).collect();
+                        if ks.is_empty() {
+                            return None;
+                        }
+                        units.push(Unit::Cite(ks));
                     }
+                    "bibliography" if top => {
+                        let _ = braced_name(chars, &mut i)?;
+                        evs.push(Ev::Biblio);
+                    }
+                    "printbibliography" if top => evs.push(Ev::Biblio),
                     // Unresolved refs render as TeX's own `??`.
                     "ref" | "eqref" | "pageref" | "autoref" | "cref" | "Cref" | "vref" => {
                         let _ = braced_name(chars, &mut i)?;
@@ -1035,6 +1061,9 @@ fn unit_w(u: &Unit, size: f64, space_w: f64, measure: &dyn Fn(char, f64, Style) 
         Unit::Glue { .. } => space_w,
         Unit::Indent(v) => *v,
         Unit::Sup(t) => t.chars().map(|c| measure(c, size * 0.65, Style::Regular)).sum(),
+        // Cites resolve to Word before layout — the literal width is a
+        // safe fallback if a caller forgets the resolution pass.
+        Unit::Cite(ks) => ks.join(",").chars().map(|c| measure(c, size, Style::Regular)).sum::<f64>() + 2.0 * measure('[', size, Style::Regular),
         Unit::Break | Unit::Item { .. } => 0.0,
     }
 }
@@ -1238,6 +1267,8 @@ fn emit_line(seg: &[Unit], s: usize, ce: usize, cfg: &ParaCfg, justify: bool, ma
             }
             Unit::Glue { .. } => lay.x += space_w + extra,
             Unit::Break | Unit::Item { .. } => {}
+            // Resolved to Word before layout — skipped if it survives.
+            Unit::Cite(_) => {}
         }
     }
     Fragment { items: lay.items, width: lay.x, height: lay.top.max(size * 0.7), depth: -lay.bottom.min(0.0), baseline: 0.0 }
@@ -1403,6 +1434,7 @@ fn units_key(units: &[Unit], tag: u64) -> u64 {
                 mix(h, *depth as u64)
             }
             Unit::Sup(t) => t.chars().fold(mix(h, 8), |h, c| mix(h, c as u64)),
+            Unit::Cite(ks) => ks.iter().flat_map(|k| k.chars()).fold(mix(h, 9), |h, c| mix(h, c as u64)),
         };
     }
     h
@@ -1436,11 +1468,37 @@ fn close_seg(segs: &mut Vec<Segment>, prev: &[Segment], used: &mut [bool], key: 
     }
 }
 
+/// Rewrite every `Unit::Cite` in place — numbered `[n]` markers when
+/// a [`Cites`] backend is wired, `[key]` literals otherwise. Runs
+/// between parse and layout so breaking/keys see resolved text and
+/// citation-order numbering falls out of the left-to-right walk.
+fn resolve_cites(units: &mut [Unit], cites: &mut Option<&mut dyn Cites>) {
+    for u in units.iter_mut() {
+        if let Unit::Cite(ks) = u {
+            let inner = match cites.as_deref_mut() {
+                Some(r) => ks.iter().map(|k| r.num(k).map_or_else(|| "?".to_string(), |n| n.to_string())).collect::<Vec<_>>().join(","),
+                None => ks.join(","),
+            };
+            let text = format!("[{inner}]");
+            *u = Unit::Word(text.chars().map(|c| (c, Style::Regular)).collect());
+        }
+    }
+}
+
 /// Typeset a document body into keyed segments — see [`doc`] for the
 /// supported subset. `prev` is the previous pass's segments (empty on
 /// first run): segments whose content key survived the edit are
 /// reused unbroken; only dirty paragraphs pay the line breaker.
-pub fn doc_segments(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64, Style) -> f64, prev: &[Segment]) -> Option<Vec<Segment>> {
+/// `cites` resolves `\cite` markers and prints the References block;
+/// a doc containing `\bibliography` without it returns `None`.
+pub fn doc_segments(
+    src: &str,
+    size: f64,
+    width: f64,
+    measure: &dyn Fn(char, f64, Style) -> f64,
+    prev: &[Segment],
+    mut cites: Option<&mut dyn Cites>,
+) -> Option<Vec<Segment>> {
     if src.len() > MAX_DOC {
         return None;
     }
@@ -1465,9 +1523,16 @@ pub fn doc_segments(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64
         }
     }
     let chars: Vec<char> = body.chars().collect();
-    let (evs, used) = stream(&chars, 0, None, size, measure, 0, true)?;
+    let (mut evs, used) = stream(&chars, 0, None, size, measure, 0, true)?;
     if used != chars.len() {
         return None;
+    }
+    for ev in &mut evs {
+        match ev {
+            Ev::Unit(u) => resolve_cites(std::slice::from_mut(u), &mut cites),
+            Ev::Heading(us, _) | Ev::Note(us) | Ev::Meta(_, us) => resolve_cites(us, &mut cites),
+            _ => {}
+        }
     }
     let cfg = ParaCfg { size, width, space_w: measure(' ', size, Style::Regular).max(size * 0.2), x_off: 0.0, measure };
     let mut segs: Vec<Segment> = Vec::new();
@@ -1535,6 +1600,34 @@ pub fn doc_segments(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64
                     *slot = Some(us);
                 }
             }
+            Ev::Biblio => {
+                let r = cites.as_deref()?;
+                let key = units_key(&para, 1);
+                close_seg(&mut segs, prev, &mut taken, key, |out| emit_para(&mut para, out, &cfg));
+                para.clear();
+                let entries = r.entries();
+                let bkey = entries.iter().flat_map(|e| e.chars()).fold(mix(0xcbf29ce484222325, 6), |h, c| mix(h, c as u64));
+                close_seg(&mut segs, prev, &mut taken, bkey, |out| {
+                    if entries.is_empty() {
+                        return;
+                    }
+                    // A \section*-style heading, then one paragraph per
+                    // entry ("[n] text"), hanging like thebibliography.
+                    let hs = size * 1.4;
+                    let hcfg = ParaCfg { size: hs, width, space_w: measure(' ', hs, Style::Regular).max(hs * 0.2), x_off: 0.0, measure };
+                    let heading: Vec<Unit> = vec![Unit::Word("References".chars().map(|c| (c, Style::Regular)).collect())];
+                    out.push(Block::Gap(hs * 0.7));
+                    for (s, ce, _) in break_lines(&heading, &hcfg, true) {
+                        out.push(Block::Line(emit_line(&heading, s, ce, &hcfg, false, None)));
+                    }
+                    out.push(Block::Gap(hs * 0.35));
+                    for e in &entries {
+                        let mut us: Vec<Unit> = vec![Unit::Item { marker: None, depth: 1 }];
+                        us.push(Unit::Word(e.chars().map(|c| (c, Style::Regular)).collect()));
+                        emit_para(&mut us, out, &cfg);
+                    }
+                });
+            }
             Ev::Maketitle => {
                 let key = units_key(&para, 1);
                 close_seg(&mut segs, prev, &mut taken, key, |out| emit_para(&mut para, out, &cfg));
@@ -1577,7 +1670,7 @@ pub fn doc_segments(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64
 /// Anything else outside the subset returns `None` and the caller
 /// falls back to the external engine. All widths flow through `measure`.
 pub fn doc(src: &str, size: f64, width: f64, measure: &dyn Fn(char, f64, Style) -> f64) -> Option<Vec<Block>> {
-    let segs = doc_segments(src, size, width, measure, &[])?;
+    let segs = doc_segments(src, size, width, measure, &[], None)?;
     Some(segs.into_iter().flat_map(|s| s.blocks).collect())
 }
 
@@ -1835,9 +1928,9 @@ mod tests {
     fn segments_reuse_unchanged_paragraphs() {
         let src_a = "First paragraph stays.\n\nSecond paragraph is edited.\n\nThird paragraph stays too.\n\n";
         let src_b = "First paragraph stays.\n\nSecond paragraph was edited!\n\nThird paragraph stays too.\n\n";
-        let segs_a = doc_segments(src_a, 10.0, 400.0, &fixed, &[]).unwrap();
+        let segs_a = doc_segments(src_a, 10.0, 400.0, &fixed, &[], None).unwrap();
         assert!(segs_a.len() >= 3, "{:?}", segs_a.len());
-        let segs_b = doc_segments(src_b, 10.0, 400.0, &fixed, &segs_a).unwrap();
+        let segs_b = doc_segments(src_b, 10.0, 400.0, &fixed, &segs_a, None).unwrap();
         assert_eq!(segs_a.len(), segs_b.len());
         // Paragraphs 1 and 3 are reused — same key, same blocks.
         assert_eq!(segs_a[0].key, segs_b[0].key);
@@ -1852,13 +1945,62 @@ mod tests {
     }
 
     #[test]
+    fn cites_number_and_biblio_prints() {
+        struct R {
+            order: Vec<String>,
+        }
+        impl Cites for R {
+            fn num(&mut self, key: &str) -> Option<usize> {
+                match key {
+                    "missing" => None,
+                    k => {
+                        if let Some(i) = self.order.iter().position(|o| o == k) {
+                            Some(i + 1)
+                        } else {
+                            self.order.push(k.to_string());
+                            Some(self.order.len())
+                        }
+                    }
+                }
+            }
+            fn entries(&self) -> Vec<String> {
+                self.order.iter().enumerate().map(|(i, k)| format!("[{}] entry {k}", i + 1)).collect()
+            }
+        }
+        let src = "See \\cite{b} and \\citep{a,missing}; again \\cite{b}.\n\n\\bibliography{refs}\n";
+        let mut r = R { order: Vec::new() };
+        let segs = doc_segments(src, 10.0, 400.0, &fixed, &[], Some(&mut r)).unwrap();
+        let flat: Vec<Block> = segs.iter().flat_map(|s| s.blocks.iter().cloned()).collect();
+        let mut all = String::new();
+        for b in &flat {
+            if let Block::Line(f) = b {
+                for i in &f.items {
+                    if let Item::Text { text, .. } = i {
+                        all.push_str(text);
+                        all.push('|');
+                    }
+                }
+            }
+        }
+        // First cite → [1] for b, [2] for a, ? for missing; repeat → [1].
+        assert!(all.contains("[1]"), "{all}");
+        assert!(all.contains("[2,?]"), "{all}");
+        // References block with both entries in citation order.
+        assert!(all.contains("References"), "{all}");
+        assert!(all.contains("[1] entry b"), "{all}");
+        assert!(all.contains("[2] entry a"), "{all}");
+        // Without a backend, \bibliography falls back.
+        assert!(doc_segments(src, 10.0, 400.0, &fixed, &[], None).is_none());
+    }
+
+    #[test]
     fn segments_renumbering_invalidates() {
         // Inserting a footnote earlier renumbers later markers — the
         // affected segments must NOT be reused.
         let src_a = "Intro text.\n\nA note\\footnote{first} here.\n\nAnother note\\footnote{second} there.\n\n";
         let src_b = "Intro text.\n\nNew note\\footnote{zero} plus a note\\footnote{first} here.\n\nAnother note\\footnote{second} there.\n\n";
-        let segs_a = doc_segments(src_a, 10.0, 400.0, &fixed, &[]).unwrap();
-        let segs_b = doc_segments(src_b, 10.0, 400.0, &fixed, &segs_a).unwrap();
+        let segs_a = doc_segments(src_a, 10.0, 400.0, &fixed, &[], None).unwrap();
+        let segs_b = doc_segments(src_b, 10.0, 400.0, &fixed, &segs_a, None).unwrap();
         // Para 1 unchanged → reused; para 2 (new note + renumbered
         // marker text) must differ.
         assert_eq!(segs_a[0].key, segs_b[0].key);

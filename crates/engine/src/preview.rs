@@ -495,6 +495,98 @@ fn flush_notes(
     *note_h = 0.0;
 }
 
+/// Citation resolution backed by the document's `.bib` files — unsrt
+/// numbering (order of first `\cite`) plus formatted References lines.
+#[cfg(not(target_arch = "wasm32"))]
+struct EngineCites {
+    bib: texparse::BibFile,
+    order: Vec<String>,
+    next: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl EngineCites {
+    /// `Author. Title. Venue, Year.` — plain-text bibliography line.
+    fn fmt(&self, key: &str) -> String {
+        let Some(e) = self.bib.get(key) else { return key.to_string() };
+        let author = e.field("author").or_else(|| e.field("editor")).unwrap_or(key);
+        let title = e.field("title").unwrap_or("");
+        let venue = ["journal", "booktitle", "publisher", "school", "institution", "howpublished"].iter().find_map(|f| e.field(f)).unwrap_or("");
+        let year = e.field("year").unwrap_or("");
+        let tail = [venue, year].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
+        let mut s = format!("{}. {}.", author.trim_end_matches('.'), title.trim_end_matches('.'));
+        if !tail.is_empty() {
+            s.push_str(&format!(" {}.", tail));
+        }
+        s.chars().take(600).collect()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl typeset::Cites for EngineCites {
+    fn num(&mut self, key: &str) -> Option<usize> {
+        self.bib.get(key)?;
+        if let Some(i) = self.order.iter().position(|k| k == key) {
+            return Some(i + 1);
+        }
+        self.next += 1;
+        self.order.push(key.to_string());
+        Some(self.next)
+    }
+    fn entries(&self) -> Vec<String> {
+        self.order.iter().enumerate().map(|(i, k)| format!("[{}] {}", i + 1, self.fmt(k))).collect()
+    }
+}
+
+/// Read every `.bib` named by `\bibliography{a,b}`/`\addbibresource`
+/// in `src`, relative to the document's directory. `None` when the
+/// doc declares no bibliography (cites then render as literal keys);
+/// also `None` when declared but nothing parses — the caller falls
+/// back to the external engine, which reports the real problem.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_cites(path: &Path, src: &str) -> Option<EngineCites> {
+    const MAX_BIB: u64 = 4 * 1024 * 1024;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
+    let mut names: Vec<String> = Vec::new();
+    for marker in ["\\bibliography{", "\\addbibresource{"] {
+        let mut from = 0usize;
+        while let Some(rel) = src.get(from..).and_then(|s| s.find(marker)) {
+            let i = from + rel + marker.len();
+            let Some(end) = src.get(i..).and_then(|s| s.find('}')) else { break };
+            for n in src.get(i..i + end.min(256)).unwrap_or_default().split(',') {
+                let n = n.trim();
+                if !n.is_empty() && names.len() < 16 && !names.iter().any(|x| x == n) {
+                    names.push(n.to_string());
+                }
+            }
+            from = i + end + 1;
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+    let mut bib = texparse::BibFile::default();
+    for n in &names {
+        let p = parent.join(if n.ends_with(".bib") { n.to_string() } else { format!("{n}.bib") });
+        if std::fs::metadata(&p).map(|m| m.len() > MAX_BIB).unwrap_or(true) {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(&p) {
+            let f = texparse::parse_bib(&text);
+            for e in f.entries {
+                if !e.key.is_empty() && bib.get(&e.key).is_none() {
+                    bib.entries.push(e);
+                }
+            }
+        }
+    }
+    if bib.entries.is_empty() {
+        return None;
+    }
+    Some(EngineCites { bib, order: Vec::new(), next: 0 })
+}
+
 /// Per-path segment cache for dirty-region typesetting: an edit
 /// re-parses the body but reuses the line-broken blocks of every
 /// paragraph whose content key survived — only dirty segments pay
@@ -530,21 +622,27 @@ fn incr_store(path: &Path, segs: Vec<typeset::Segment>) {
 /// glyph exists in the font; otherwise the caller compiles for real.
 #[cfg(not(target_arch = "wasm32"))]
 fn native_doc_pdf(src: &str) -> Option<(Vec<u8>, u32)> {
-    native_doc_pdf_inner(src, &[]).map(|(bytes, pages, _)| (bytes, pages))
+    native_doc_pdf_inner(src, &[], None).map(|(bytes, pages, _)| (bytes, pages))
 }
 
 /// The file-backed variant used by `preview_file`: reuses unchanged
-/// segments from the previous pass for this path.
+/// segments from the previous pass for this path, and wires the doc's
+/// `.bib` files for `\cite` numbering + the References block.
 #[cfg(not(target_arch = "wasm32"))]
 fn native_doc_pdf_incr(path: &Path, src: &str) -> Option<(Vec<u8>, u32)> {
     let prev = incr_take(path);
-    let (bytes, pages, segs) = native_doc_pdf_inner(src, &prev)?;
+    let mut cites = load_cites(path, src);
+    let (bytes, pages, segs) = native_doc_pdf_inner(src, &prev, cites.as_mut().map(|c| c as &mut dyn typeset::Cites))?;
     incr_store(path, segs);
     Some((bytes, pages))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_doc_pdf_inner(src: &str, prev: &[typeset::Segment]) -> Option<(Vec<u8>, u32, Vec<typeset::Segment>)> {
+fn native_doc_pdf_inner(
+    src: &str,
+    prev: &[typeset::Segment],
+    cites: Option<&mut dyn typeset::Cites>,
+) -> Option<(Vec<u8>, u32, Vec<typeset::Segment>)> {
     let (reg, ital) = preview_fonts()?;
     let size = 11.0;
     let page_w = 612.0;
@@ -559,7 +657,7 @@ fn native_doc_pdf_inner(src: &str, prev: &[typeset::Segment]) -> Option<(Vec<u8>
             typeset::Style::Regular => reg.width_pt(c, s),
         }
     };
-    let segs = typeset::doc_segments(src, size, text_w, &measure, prev)?;
+    let segs = typeset::doc_segments(src, size, text_w, &measure, prev, cites)?;
     // Every glyph must exist in its face — .notdef means the doc isn't
     // faithfully representable; fall back instead.
     if !blocks_glyphs_ok(segs.iter().flat_map(|s| s.blocks.iter()), &reg, ital_ref) {
