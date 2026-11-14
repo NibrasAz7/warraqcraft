@@ -597,6 +597,13 @@ enum Unit {
     /// `\cite` keys — resolved to `[n]` markers (or `[key]` literals)
     /// between parse and layout, so downstream never sees this.
     Cite(Vec<String>),
+    /// `\ref`/`\eqref` — resolved to the label's number pre-layout;
+    /// `paren` wraps it `(n)` (eqref style). `??` when unresolved.
+    Ref { key: String, paren: bool },
+    /// `\label{key}` — a zero-width anchor recording where the key
+    /// was declared; the numbering pass maps it to the enclosing
+    /// numbered construct (section, equation).
+    Label(String),
 }
 
 /// Citation backend the caller supplies — unsrt semantics: keys are
@@ -617,8 +624,11 @@ enum Ev {
     Heading(Vec<Unit>, f64),
     /// A footnote body — emitted at page bottom by the caller.
     Note(Vec<Unit>),
-    /// Display math — a standalone centered block.
-    Math(Fragment),
+    /// Display math — a standalone centered block. `n` is the
+    /// equation number: `0` unnumbered (`$$`/`\[`), `1` means "number
+    /// me" (equation env — the numbering pass writes the real value),
+    /// anything higher is the assigned number.
+    Math(Fragment, u32),
     /// `\maketitle` — emits stored title/author/date.
     Maketitle,
     /// `\title`/`\author`/`\date` — stored until `\maketitle`.
@@ -804,7 +814,7 @@ fn stream(
                         evs.extend(units.drain(..).map(Ev::Unit));
                         evs.push(Ev::Par);
                     }
-                    evs.push(Ev::Math(math(&inner, size, measure)?));
+                    evs.push(Ev::Math(math(&inner, size, measure)?, 0));
                     i = j + 2;
                 } else {
                     let mut j = i + 1;
@@ -847,7 +857,7 @@ fn stream(
                                 evs.extend(units.drain(..).map(Ev::Unit));
                                 evs.push(Ev::Par);
                             }
-                            evs.push(Ev::Math(math(&inner, size, measure)?));
+                            evs.push(Ev::Math(math(&inner, size, measure)?, 0));
                             i = j + 2;
                         }
                         _ => return None,
@@ -919,13 +929,24 @@ fn stream(
                         evs.push(Ev::Biblio);
                     }
                     "printbibliography" if top => evs.push(Ev::Biblio),
-                    // Unresolved refs render as TeX's own `??`.
-                    "ref" | "eqref" | "pageref" | "autoref" | "cref" | "Cref" | "vref" => {
+                    // `\ref`/`\eqref` resolve to the label's number;
+                    // the rest keep TeX's own `??` (pageref needs the
+                    // paginated result, which typesetting can't know).
+                    "ref" | "autoref" | "cref" | "Cref" | "vref" => {
+                        let key = braced_name(chars, &mut i)?;
+                        units.push(Unit::Ref { key, paren: false });
+                    }
+                    "eqref" => {
+                        let key = braced_name(chars, &mut i)?;
+                        units.push(Unit::Ref { key, paren: true });
+                    }
+                    "pageref" => {
                         let _ = braced_name(chars, &mut i)?;
                         push_word(&mut units, "??");
                     }
                     "label" => {
-                        let _ = braced_name(chars, &mut i)?;
+                        let key = braced_name(chars, &mut i)?;
+                        units.push(Unit::Label(key));
                     }
                     "url" => {
                         let u = braced_name(chars, &mut i)?;
@@ -962,7 +983,10 @@ fn stream(
                                     evs.push(Ev::Par);
                                 }
                                 let inner: String = chars[start..e].iter().collect();
-                                evs.push(Ev::Math(math(&inner, size, measure)?));
+                                // `equation` numbers its line; the
+                                // starred/displaymath variants don't.
+                                let numbered = u32::from(env == "equation");
+                                evs.push(Ev::Math(math(&inner, size, measure)?, numbered));
                                 i = e + needle.len();
                             }
                             _ => return None,
@@ -1064,7 +1088,10 @@ fn unit_w(u: &Unit, size: f64, space_w: f64, measure: &dyn Fn(char, f64, Style) 
         // Cites resolve to Word before layout — the literal width is a
         // safe fallback if a caller forgets the resolution pass.
         Unit::Cite(ks) => ks.join(",").chars().map(|c| measure(c, size, Style::Regular)).sum::<f64>() + 2.0 * measure('[', size, Style::Regular),
-        Unit::Break | Unit::Item { .. } => 0.0,
+        // Refs/labels resolve or skip before layout — zero-width
+        // fallbacks so an unresolved one costs nothing.
+        Unit::Ref { key, .. } => key.chars().map(|c| measure(c, size, Style::Regular)).sum(),
+        Unit::Label(_) | Unit::Break | Unit::Item { .. } => 0.0,
     }
 }
 
@@ -1267,8 +1294,8 @@ fn emit_line(seg: &[Unit], s: usize, ce: usize, cfg: &ParaCfg, justify: bool, ma
             }
             Unit::Glue { .. } => lay.x += space_w + extra,
             Unit::Break | Unit::Item { .. } => {}
-            // Resolved to Word before layout — skipped if it survives.
-            Unit::Cite(_) => {}
+            // Resolved to Word or skipped before layout.
+            Unit::Cite(_) | Unit::Ref { .. } | Unit::Label(_) => {}
         }
     }
     Fragment { items: lay.items, width: lay.x, height: lay.top.max(size * 0.7), depth: -lay.bottom.min(0.0), baseline: 0.0 }
@@ -1435,6 +1462,8 @@ fn units_key(units: &[Unit], tag: u64) -> u64 {
             }
             Unit::Sup(t) => t.chars().fold(mix(h, 8), |h, c| mix(h, c as u64)),
             Unit::Cite(ks) => ks.iter().flat_map(|k| k.chars()).fold(mix(h, 9), |h, c| mix(h, c as u64)),
+            Unit::Ref { key, paren } => key.chars().fold(mix(h, 10), |h, c| mix(h, c as u64)) + *paren as u64,
+            Unit::Label(k) => k.chars().fold(mix(h, 11), |h, c| mix(h, c as u64)),
         };
     }
     h
@@ -1481,6 +1510,77 @@ fn resolve_cites(units: &mut [Unit], cites: &mut Option<&mut dyn Cites>) {
             };
             let text = format!("[{inner}]");
             *u = Unit::Word(text.chars().map(|c| (c, Style::Regular)).collect());
+        }
+    }
+}
+
+/// Two sweeps over the event stream: number sections and equation
+/// environments, collect every `\label` against the enclosing number,
+/// then rewrite `\ref`/`\eqref` units to it (`??` when unknown).
+/// Runs pre-layout like [`resolve_cites`], so segment keys and reuse
+/// see the final text — a renumbering edit invalidates honestly.
+fn resolve_refs(evs: &mut [Ev]) {
+    let mut labels: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let (mut sec, mut sub, mut sss, mut eqn) = (0u32, 0u32, 0u32, 0u32);
+    let mut cur = String::new();
+    for ev in evs.iter_mut() {
+        match ev {
+            Ev::Heading(us, f) => {
+                if *f >= 1.35 {
+                    sec += 1;
+                    sub = 0;
+                    sss = 0;
+                    cur = sec.to_string();
+                } else if *f >= 1.1 {
+                    sub += 1;
+                    sss = 0;
+                    cur = format!("{sec}.{sub}");
+                } else {
+                    sss += 1;
+                    cur = format!("{sec}.{sub}.{sss}");
+                }
+                // The heading prints its number like \section does —
+                // the count goes into the units so keys stay honest.
+                let mut nu: Vec<Unit> =
+                    vec![Unit::Word(cur.chars().chain([' ']).map(|c| (c, Style::Regular)).collect()), Unit::Glue { breakable: false }];
+                nu.append(us);
+                *us = nu;
+                for u in us.iter() {
+                    if let Unit::Label(k) = u {
+                        labels.insert(k.clone(), cur.clone());
+                    }
+                }
+            }
+            Ev::Math(_, n) if *n == 1 => {
+                eqn += 1;
+                *n = eqn;
+                cur = eqn.to_string();
+            }
+            Ev::Unit(Unit::Label(k)) => {
+                labels.insert(k.clone(), cur.clone());
+            }
+            Ev::Note(us) | Ev::Meta(_, us) => {
+                for u in us.iter() {
+                    if let Unit::Label(k) = u {
+                        labels.insert(k.clone(), cur.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for ev in evs.iter_mut() {
+        let us: &mut [Unit] = match ev {
+            Ev::Unit(u) => std::slice::from_mut(u),
+            Ev::Heading(us, _) | Ev::Note(us) | Ev::Meta(_, us) => us,
+            _ => continue,
+        };
+        for u in us.iter_mut() {
+            if let Unit::Ref { key, paren } = u {
+                let n = labels.get(key).cloned().unwrap_or_else(|| "??".to_string());
+                let text = if *paren { format!("({n})") } else { n };
+                *u = Unit::Word(text.chars().map(|c| (c, Style::Regular)).collect());
+            }
         }
     }
 }
@@ -1534,6 +1634,7 @@ pub fn doc_segments(
             _ => {}
         }
     }
+    resolve_refs(&mut evs);
     let cfg = ParaCfg { size, width, space_w: measure(' ', size, Style::Regular).max(size * 0.2), x_off: 0.0, measure };
     let mut segs: Vec<Segment> = Vec::new();
     let mut taken = vec![false; prev.len()];
@@ -1578,17 +1679,24 @@ pub fn doc_segments(
                     }
                 });
             }
-            Ev::Math(mut f) => {
+            Ev::Math(mut f, n) => {
                 let key = units_key(&para, 1);
                 close_seg(&mut segs, prev, &mut taken, key, |out| emit_para(&mut para, out, &cfg));
                 para.clear(); // emit_para drains on the fresh path; reuse needs it too
-                let mkey = frag_key(&f, mix(0xcbf29ce484222325, 4));
+                let mkey = mix(frag_key(&f, mix(0xcbf29ce484222325, 4)), n as u64);
                 close_seg(&mut segs, prev, &mut taken, mkey, |out| {
                     let dx = ((width - f.width) / 2.0).max(0.0);
                     for it in &mut f.items {
                         match it {
                             Item::Text { x, .. } | Item::Rule { x, .. } => *x += dx,
                         }
+                    }
+                    // Equation number at the right margin, like TeX.
+                    if n > 0 {
+                        let tag = format!("({n})");
+                        let tw: f64 = tag.chars().map(|c| measure(c, size, Style::Regular)).sum();
+                        f.items.push(Item::Text { x: width - tw, y: -size * 0.3, size, style: Style::Regular, text: tag });
+                        f.width = f.width.max(width - tw + 1.0);
                     }
                     out.push(Block::Gap(size * 0.5));
                     out.push(Block::Line(f));
@@ -1991,6 +2099,41 @@ mod tests {
         assert!(all.contains("[2] entry a"), "{all}");
         // Without a backend, \bibliography falls back.
         assert!(doc_segments(src, 10.0, 400.0, &fixed, &[], None).is_none());
+    }
+
+    #[test]
+    fn refs_resolve_to_section_and_equation_numbers() {
+        fn texts(blocks: &[Block]) -> String {
+            let mut all = String::new();
+            for b in blocks {
+                if let Block::Line(f) = b {
+                    for i in &f.items {
+                        if let Item::Text { text, .. } = i {
+                            all.push_str(text);
+                            all.push('|');
+                        }
+                    }
+                }
+            }
+            all
+        }
+        let src = "\\section{Intro}\\label{sec:i} See \\ref{sec:i} and \\ref{sec:next} plus \\eqref{eq:a}.\n\n\\subsection{Deep}\\label{sec:next} More.\n\n\\begin{equation} x^2 \\end{equation} after \\ref{eq:a}.\n\n\\begin{equation} y \\end{equation}\\label{eq:a} done.\n";
+        let blocks = doc(src, 10.0, 400.0, &fixed).unwrap();
+        let all = texts(&blocks);
+        // Headings print their numbers.
+        assert!(all.contains("1 "), "{all}");
+        assert!(all.contains("1.1 "), "{all}");
+        // \ref{sec:i} → 1, forward ref \ref{sec:next} → 1.1,
+        // \eqref{eq:a} → (2) — the second numbered equation.
+        for want in ["|1|", "|1.1|", "|(2)|", "|2|"] {
+            assert!(all.contains(want), "missing {want} in {all}");
+        }
+        // Unnumbered $$…$$ doesn't consume an equation number, and an
+        // unknown label renders ??.
+        let src2 = "\\begin{equation}a\\end{equation}\n\n$$b$$\n\n\\begin{equation}c\\end{equation}\n\nsee \\eqref{nope} \\ref{also_nope}.\n";
+        let all2 = texts(&doc(src2, 10.0, 400.0, &fixed).unwrap());
+        assert!(all2.contains("|(1)|") && all2.contains("|(2)|"), "{all2}");
+        assert!(all2.contains("??"), "{all2}");
     }
 
     #[test]

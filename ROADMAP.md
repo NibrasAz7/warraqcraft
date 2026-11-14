@@ -391,3 +391,13 @@ widget) are tracked there — nothing in M0 depends on them.
   but-unreadable `.bib` → `None` → honest external fallback, same as
   a missing resolver. Verified in a real PDF: `[1]`, `[2,?]`,
   memoized re-cite, printed References block.
+
+- TASK-29 — `\ref` resolution: headings now print their numbers
+  (`1`, `1.1`, …) like `\section` does, `equation` envs carry a
+  right-aligned `(n)`, and `\label` records a zero-width `Unit::Label`
+  anchor. A two-sweep `resolve_refs` pass (pre-layout, pre-key)
+  maps labels to the enclosing numbered construct — forward refs
+  included — then rewrites `\ref`→`n`, `\eqref`→`(n)`, unknown →
+  `??`. `\pageref` stays `??` (page numbers need pagination the
+  typeset layer can't see — honest limit). Unnumbered `$$…$$` and
+  `equation*` don't consume the counter.
