@@ -421,6 +421,9 @@ pub struct Strings {
     pub overwrite: &'static str,
     pub keep_editing: &'static str,
     pub status_reloaded: &'static str,
+    pub pkg_install: &'static str,
+    pub status_pkg_installing: &'static str, // "{name}"
+    pub status_pkg_result: &'static str,     // "{name}", "{detail}"
 }
 
 /// Substitute `{name}` placeholders in a catalog format string, then put
@@ -733,6 +736,9 @@ const EN: Strings = Strings {
     overwrite: "Save over disk",
     keep_editing: "Keep editing",
     status_reloaded: "reloaded from disk",
+    pkg_install: "Install",
+    status_pkg_installing: "installing package {name}…",
+    status_pkg_result: "package {name}: {detail}",
 };
 
 const AR: Strings = Strings {
@@ -1036,6 +1042,9 @@ const AR: Strings = Strings {
     overwrite: "حفظ فوق القرص",
     keep_editing: "متابعة التحرير",
     status_reloaded: "أُعيد التحميل من القرص",
+    pkg_install: "تثبيت",
+    status_pkg_installing: "جارٍ تثبيت الحزمة {name}…",
+    status_pkg_result: "الحزمة {name}: {detail}",
 };
 
 const FA: Strings = Strings {
@@ -1339,6 +1348,9 @@ const FA: Strings = Strings {
     overwrite: "ذخیره روی دیسک",
     keep_editing: "ادامه ویرایش",
     status_reloaded: "از روی دیسک بارگذاری شد",
+    pkg_install: "نصب",
+    status_pkg_installing: "در حال نصب بسته {name}…",
+    status_pkg_result: "بسته {name}: {detail}",
 };
 
 const UR: Strings = Strings {
@@ -1642,6 +1654,9 @@ const UR: Strings = Strings {
     overwrite: "ڈسک پر محفوظ کریں",
     keep_editing: "ترمیم جاری رکھیں",
     status_reloaded: "ڈسک سے دوبارہ لوڈ ہوا",
+    pkg_install: "انسٹال",
+    status_pkg_installing: "{name} پیکیج انسٹال ہو رہی ہے…",
+    status_pkg_result: "پیکیج {name}: {detail}",
 };
 
 const FR: Strings = Strings {
@@ -1945,6 +1960,9 @@ cliquer pour copier",
     overwrite: "Enregistrer sur le disque",
     keep_editing: "Continuer l’édition",
     status_reloaded: "rechargé depuis le disque",
+    pkg_install: "Installer",
+    status_pkg_installing: "installation du paquet {name}…",
+    status_pkg_result: "paquet {name} : {detail}",
 };
 
 const IT: Strings = Strings {
@@ -2248,6 +2266,9 @@ clicca per copiare",
     overwrite: "Salva sul disco",
     keep_editing: "Continua a modificare",
     status_reloaded: "ricaricato dal disco",
+    pkg_install: "Installa",
+    status_pkg_installing: "installazione del pacchetto {name}…",
+    status_pkg_result: "pacchetto {name}: {detail}",
 };
 
 const DE: Strings = Strings {
@@ -2552,6 +2573,9 @@ Klicken zum Kopieren",
     overwrite: "Auf Datenträger speichern",
     keep_editing: "Weiter bearbeiten",
     status_reloaded: "vom Datenträger neu geladen",
+    pkg_install: "Installieren",
+    status_pkg_installing: "installiere Paket {name}…",
+    status_pkg_result: "Paket {name}: {detail}",
 };
 
 const ES: Strings = Strings {
@@ -2855,6 +2879,9 @@ clic para copiar",
     overwrite: "Guardar sobre el disco",
     keep_editing: "Seguir editando",
     status_reloaded: "recargado desde el disco",
+    pkg_install: "Instalar",
+    status_pkg_installing: "instalando el paquete {name}…",
+    status_pkg_result: "paquete {name}: {detail}",
 };
 
 const PT: Strings = Strings {
@@ -3158,6 +3185,9 @@ clique para copiar",
     overwrite: "Guardar sobre o disco",
     keep_editing: "Continuar a editar",
     status_reloaded: "recarregado do disco",
+    pkg_install: "Instalar",
+    status_pkg_installing: "a instalar o pacote {name}…",
+    status_pkg_result: "pacote {name}: {detail}",
 };
 
 const TR: Strings = Strings {
@@ -3461,6 +3491,9 @@ kopyalamak için tıkla",
     overwrite: "Diskin üzerine kaydet",
     keep_editing: "Düzenlemeye devam et",
     status_reloaded: "diskten yeniden yüklendi",
+    pkg_install: "Yükle",
+    status_pkg_installing: "{name} paketi yükleniyor…",
+    status_pkg_result: "paket {name}: {detail}",
 };
 
 const LA: Strings = Strings {
@@ -3764,6 +3797,9 @@ preme ut copies",
     overwrite: "Super discum serva",
     keep_editing: "Recensionem continua",
     status_reloaded: "ex disco iterum lectum",
+    pkg_install: "Instaura",
+    status_pkg_installing: "{name} fasciculus instituere…",
+    status_pkg_result: "fasciculus {name}: {detail}",
 };
 
 const RU: Strings = Strings {
@@ -4067,6 +4103,9 @@ const RU: Strings = Strings {
     overwrite: "Сохранить поверх диска",
     keep_editing: "Продолжить редактирование",
     status_reloaded: "перезагружено с диска",
+    pkg_install: "Установить",
+    status_pkg_installing: "установка пакета {name}…",
+    status_pkg_result: "пакет {name}: {detail}",
 };
 
 const ZH: Strings = Strings {
@@ -4370,6 +4409,9 @@ const ZH: Strings = Strings {
     overwrite: "覆盖保存到磁盘",
     keep_editing: "继续编辑",
     status_reloaded: "已从磁盘重新加载",
+    pkg_install: "安装",
+    status_pkg_installing: "正在安装包 {name}…",
+    status_pkg_result: "包 {name}：{detail}",
 };
 
 const JA: Strings = Strings {
@@ -4673,6 +4715,9 @@ const JA: Strings = Strings {
     overwrite: "ディスクに上書き保存",
     keep_editing: "編集を続ける",
     status_reloaded: "ディスクから再読み込みしました",
+    pkg_install: "インストール",
+    status_pkg_installing: "パッケージ {name} をインストール中…",
+    status_pkg_result: "パッケージ {name}: {detail}",
 };
 
 const KO: Strings = Strings {
@@ -4976,6 +5021,9 @@ const KO: Strings = Strings {
     overwrite: "디스크에 덮어써 저장",
     keep_editing: "계속 편집",
     status_reloaded: "디스크에서 다시 불러옴",
+    pkg_install: "설치",
+    status_pkg_installing: "{name} 패키지 설치 중…",
+    status_pkg_result: "패키지 {name}: {detail}",
 };
 
 const HI: Strings = Strings {
@@ -5279,6 +5327,9 @@ const HI: Strings = Strings {
     overwrite: "डिस्क पर ऊपर से सहेजें",
     keep_editing: "संपादन जारी रखें",
     status_reloaded: "डिस्क से फिर से लोड किया गया",
+    pkg_install: "इंस्टॉल करें",
+    status_pkg_installing: "{name} पैकेज इंस्टॉल हो रहा है…",
+    status_pkg_result: "पैकेज {name}: {detail}",
 };
 
 /// The catalog for `lang`. English is the default for unknown languages.

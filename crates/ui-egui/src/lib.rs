@@ -434,6 +434,11 @@ pub struct WarraqApp {
     compiling: bool,
     #[cfg(not(target_arch = "wasm32"))]
     compile_rx: Option<std::sync::mpsc::Receiver<CompileJob>>,
+    /// In-flight `pkg.install` from the logs sheet (name → result).
+    #[cfg(not(target_arch = "wasm32"))]
+    pkg_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pkg_busy: Option<String>,
     report: Option<CompileReport>,
     pages: Vec<egui::TextureHandle>,
     /// PDF point size per page, parallel to `pages`.
@@ -662,6 +667,10 @@ impl WarraqApp {
             compiling: false,
             #[cfg(not(target_arch = "wasm32"))]
             compile_rx: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pkg_rx: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pkg_busy: None,
             report: None,
             pages: Vec::new(),
             page_pts: Vec::new(),
@@ -1845,6 +1854,59 @@ impl WarraqApp {
             }
         }
     }
+
+    /// Kick off `pkg.install` on a worker thread — a package manager
+    /// can take minutes, so the UI never blocks on it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_pkg_install(&mut self, name: String) {
+        if self.pkg_busy.is_some() {
+            return;
+        }
+        let Some(path) = self.session.path().map(Path::to_path_buf) else { return };
+        self.pkg_busy = Some(name.clone());
+        self.status = lang::fmt(self.s().status_pkg_installing, &[("name", &name)]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pkg_rx = Some(rx);
+        std::thread::spawn(move || {
+            let mut s = Session::new();
+            let res = s
+                .execute("document.open", &serde_json::json!({"path": path.display().to_string()}))
+                .and_then(|_| s.execute("pkg.install", &serde_json::json!({"name": name})));
+            let _ = tx.send(res.map(|_| ()).map_err(|e| e.to_string()));
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn start_pkg_install(&mut self, _name: String) {}
+
+    /// Collect a finished `pkg.install`: status line, then recompile so
+    /// the new package takes effect in the preview.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_pkg_install(&mut self) {
+        let Some(rx) = &self.pkg_rx else { return };
+        let name = self.pkg_busy.clone().unwrap_or_default();
+        match rx.try_recv() {
+            Ok(Ok(())) => {
+                self.pkg_busy = None;
+                self.pkg_rx = None;
+                self.status = lang::fmt(self.s().status_pkg_result, &[("name", &name), ("detail", "installed")]);
+                self.start_compile();
+            }
+            Ok(Err(e)) => {
+                self.pkg_busy = None;
+                self.pkg_rx = None;
+                self.status = lang::fmt(self.s().status_pkg_result, &[("name", &name), ("detail", &e)]);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pkg_busy = None;
+                self.pkg_rx = None;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn poll_pkg_install(&mut self) {}
 
     /// Rescan the project tree at most every TREE_SCAN_SECS.
     fn refresh_tree(&mut self, ctx: &egui::Context) {
@@ -3407,6 +3469,8 @@ impl WarraqApp {
                             .collect();
                         let log_tail = r.log_tail.clone();
                         let mut jump = None;
+                        #[cfg(not(target_arch = "wasm32"))]
+                        let mut install_pkg = None;
                         for (file, line, message, is_error, hint, package, cascade) in issues {
                             let path = self.issue_path(file.as_deref());
                             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.untitled.into());
@@ -3423,20 +3487,32 @@ impl WarraqApp {
                             } else {
                                 theme::pal().warn
                             };
-                            let tip = match (hint, package) {
+                            let tip = match (&hint, &package) {
                                 (Some(h), Some(p)) => Some(format!("{h}\n→ \\usepackage{{{p}}}")),
-                                (Some(h), None) => Some(h),
+                                (Some(h), None) => Some(h.clone()),
                                 (None, Some(p)) => Some(format!("→ \\usepackage{{{p}}}")),
                                 (None, None) => None,
                             };
-                            let resp = ui.selectable_label(false, egui::RichText::new(lang::view(&msg)).color(color).size(11.5));
-                            let resp = match tip {
-                                Some(t) => resp.on_hover_text(t),
-                                None => resp,
-                            };
-                            if resp.clicked() {
-                                jump = Some((file, line));
-                            }
+                            ui.horizontal(|ui| {
+                                let resp = ui.selectable_label(false, egui::RichText::new(lang::view(&msg)).color(color).size(11.5));
+                                let resp = match tip {
+                                    Some(t) => resp.on_hover_text(t),
+                                    None => resp,
+                                };
+                                if resp.clicked() {
+                                    jump = Some((file, line));
+                                }
+                                // Missing-package diagnostics carry the
+                                // package name — offer a one-click install.
+                                #[cfg(not(target_arch = "wasm32"))]
+                                if !cascade {
+                                    if let Some(p) = package.as_deref() {
+                                        if ui.add(egui::Button::new(lang::view(s.pkg_install)).small()).clicked() {
+                                            install_pkg = Some(p.to_string());
+                                        }
+                                    }
+                                }
+                            });
                         }
                         if !log_tail.is_empty() {
                             ui.add_space(4.0);
@@ -3444,6 +3520,10 @@ impl WarraqApp {
                         }
                         if let Some((file, line)) = jump {
                             self.goto_issue(file.as_deref(), line);
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(p) = install_pkg {
+                            self.start_pkg_install(p);
                         }
                     } else {
                         ui.weak(lang::view(s.logs_empty));
@@ -5525,6 +5605,7 @@ impl eframe::App for WarraqApp {
                 c.poll(&mut self.session);
             }
             self.poll_compile(ctx);
+            self.poll_pkg_install();
             self.poll_tool(ctx);
             self.poll_print();
             self.refresh_repo(ctx);
