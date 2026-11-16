@@ -208,6 +208,11 @@ pub fn permission(command: &str, params: &Value) -> Option<Permission> {
         "cite.fetch" => {
             Permission::new(Tier::NetworkProvider, true, "contacts a public resolver (doi.org/crossref/arxiv/pubmed) and writes a .bib entry")
         }
+        "pkg.list" | "pkg.audit" | "pkg.resolve" | "pkg.search" => {
+            Permission::new(Tier::ReadOnly, false, "reads project package usage, manifest and registry")
+        }
+        "pkg.install" => Permission::new(Tier::ExternalProcess, true, "runs the system TeX package manager (tlmgr/miktex/mpm)"),
+        "pkg.vendor" => Permission::new(Tier::NetworkProvider, true, "downloads a CTAN package archive into vendor/ and updates packages.toml"),
         "ai.probe" | "ai.ask" => Permission::new(Tier::NetworkProvider, true, "contacts a configured provider"),
         _ => return None,
     };

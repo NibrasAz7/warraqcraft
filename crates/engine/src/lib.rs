@@ -37,6 +37,7 @@ pub mod citefetch;
 pub mod history;
 pub mod library;
 mod logrules;
+pub mod packages;
 pub mod preview;
 pub mod project;
 pub mod repo;
@@ -80,6 +81,12 @@ pub const COMMANDS: &[&str] = &[
     "cite.fetch",
     "bib.audit",
     "bib.import",
+    "pkg.list",
+    "pkg.audit",
+    "pkg.resolve",
+    "pkg.search",
+    "pkg.install",
+    "pkg.vendor",
     "doc.suggest",
     "doc.suggest.list",
     "doc.suggest.apply",
@@ -607,6 +614,12 @@ impl Session {
             "cite.fetch" => citefetch::fetch(self, params),
             "bib.audit" => citefetch::audit(self),
             "bib.import" => bibimport::import(self, params),
+            "pkg.list" => packages::list(self),
+            "pkg.audit" => packages::audit(self),
+            "pkg.resolve" => packages::resolve_cmd(self, params),
+            "pkg.search" => packages::search_cmd(self, params),
+            "pkg.install" => packages::install(self, params),
+            "pkg.vendor" => packages::vendor(self, params),
             "doc.suggest" => suggest::suggest(self, params),
             "doc.suggest.list" => suggest::list(self),
             "doc.suggest.apply" => suggest::apply(self, params),
@@ -888,6 +901,9 @@ pub fn compile_file_with(path: &Path, src: Option<&str>, engine_override: Option
         if let Some(p) = &env_path {
             cmd.env("PATH", p);
         }
+        for (k, v) in packages::tex_env(parent) {
+            cmd.env(k, v);
+        }
         cmd.output()?
     } else {
         // -output-directory is resolved relative to the process cwd, so
@@ -905,6 +921,9 @@ pub fn compile_file_with(path: &Path, src: Option<&str>, engine_override: Option
                 .current_dir(parent);
             if let Some(p) = env_path {
                 cmd.env("PATH", p);
+            }
+            for (k, v) in packages::tex_env(parent) {
+                cmd.env(k, v);
             }
             Ok(cmd.output()?)
         };
