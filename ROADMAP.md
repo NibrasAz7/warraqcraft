@@ -11,7 +11,7 @@ widget) are tracked there — nothing in M0 depends on them.
 | Id | Scope | Status |
 | --- | --- | --- |
 | M0 | Repo scaffold (workspace, lints, xtask, AGENTS) + `texparse` (.tex lexer, structure scan, .bib parser) + `warraqcraft-cli parse/bib/check` | done |
-| M1 | Engine decision landed; `texpkg` curated package set; minimal compile pipeline (`document.compile`) | in progress — system-TeX + bundled tectonic (B-lite) done; `texpkg` open |
+| M1 | Engine decision landed; `texpkg` curated package set; minimal compile pipeline (`document.compile`) | done — system-TeX + bundled tectonic (B-lite), `texpkg` registry + `pkg.*` commands landed (TASK-31) |
 | M2 | `engine` command registry + Session; CLI `--cmd` surface | in progress — Session + execute() landed; `--cmd`/control next |
 | M3 | `ui-egui` studio: project tree, editor, PDF preview, SyncTeX nav | in progress — IDE shell, editor, PDF preview, SyncTeX click-through and project-wide outline/refs done |
 | M4 | History (snapshots/diff/restore), reference-manager integration (Zotero/CSL), arabdoc + template gallery | in progress — snapshots/history and multilingual source-only template gallery landed; reference-manager integration open |
@@ -422,3 +422,11 @@ widget) are tracked there — nothing in M0 depends on them.
   `Vaswani and Shazeer`/`Knuth et al.`. Modes without author-year
   data degrade to `[n]` (`?` for year/author) — the numeric style
   stays the honest default.
+
+- TASK-31 — package management landed (`docs/TASK-31-package-registry.md`):
+  `texpkg` grew a curated CTAN registry (`resolve`/`search`, ~90 entries);
+  `.warraqcraft/packages.toml` manifest + `vendor/texmf` tree injected
+  into the compile env; `pkg.list`/`pkg.audit`/`pkg.resolve`/
+  `pkg.search`/`pkg.install`/`pkg.vendor` commands (tlmgr→miktex/mpm, then
+  CTAN `.tds.zip` vendoring with sha256 provenance); logs-sheet Install
+  action on missing-package diagnostics. M1's open `texpkg` item closed.
