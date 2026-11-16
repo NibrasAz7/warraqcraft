@@ -16,8 +16,10 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod catalog;
+mod registry;
 
 pub use catalog::{ArgKind, ArgSpec, CommandSpec};
+pub use registry::{registry, resolve, search, PackageInfo};
 
 /// The full catalog, sorted by [`CommandSpec::name`].
 pub fn catalog() -> &'static [CommandSpec] {
