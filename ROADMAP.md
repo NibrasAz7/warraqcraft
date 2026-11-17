@@ -430,3 +430,14 @@ widget) are tracked there — nothing in M0 depends on them.
   `pkg.search`/`pkg.install`/`pkg.vendor` commands (tlmgr→miktex/mpm, then
   CTAN `.tds.zip` vendoring with sha256 provenance); logs-sheet Install
   action on missing-package diagnostics. M1's open `texpkg` item closed.
+
+- TASK-32 — Typst compile target: `.typ` files route through
+  `document.compile` to `crates/engine/src/typst.rs` → `typst
+  compile --root --diagnostic-format short`; short-format diagnostics
+  parse into `Diagnostic` (file/line/message) for the Problems pane.
+  `--package-cache-path` pins `@preview` packages inside
+  `.warraqcraft/vendor/typst-cache` (project-local, committable);
+  `--package-path` activates when `vendor/typst-packages/` exists.
+  `WARRAQCRAFT_TYPST` override + `typst` in KNOWN_TOOLS. Verified
+  live on typst 0.15.1. No SyncTeX/outline for `.typ` yet — PDF
+  preview works unchanged.

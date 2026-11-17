@@ -1,8 +1,16 @@
 # TASK-32 — Typst compile target (`.typ` via the `typst` CLI)
 
-Status: **spec** — recon done against typst 0.15.1 (portable Windows
-binary, MIT/Apache-2.0). Community ask (Andrés, Texpile dossier):
-dual LaTeX+Typst support in one project.
+Status: **landed** — `crates/engine/src/typst.rs` routes `.typ`
+files through `document.compile` to `typst compile --root
+--diagnostic-format short`, with `--package-cache-path` pinned at
+`.warraqcraft/vendor/typst-cache` (project-local `@preview`
+packages) and `--package-path` wired when
+`.warraqcraft/vendor/typst-packages/` exists. Verified live against
+typst 0.15.1: hello.typ → PDF, bad.typ → parsed file:line diagnostics.
+`WARRAQCRAFT_TYPST` env override mirrors `WARRAQCRAFT_TECTONIC`.
+Recon was done against typst 0.15.1 (portable Windows binary,
+MIT/Apache-2.0). Community ask (Andrés, Texpile dossier): dual
+LaTeX+Typst support in one project.
 
 ## Recon findings (typst 0.15.1, verified live)
 
