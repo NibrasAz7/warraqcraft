@@ -48,6 +48,7 @@ pub mod synctex;
 pub mod templates;
 pub mod toolchain;
 pub mod tools;
+pub mod typst;
 
 pub use tools::UserTool;
 
@@ -834,6 +835,11 @@ fn parent_dir(path: &Path) -> &Path {
 }
 
 pub fn compile_file_with(path: &Path, src: Option<&str>, engine_override: Option<&str>) -> Result<CompileReport, EngineError> {
+    // `.typ` files compile through the typst CLI — a different engine
+    // family entirely; the LaTeX machinery below doesn't apply.
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("typ")) {
+        return typst::compile_file(path);
+    }
     let file_dir = parent_dir(path);
 
     let owned;

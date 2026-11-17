@@ -15,7 +15,7 @@ use std::process::Command;
 use serde_json::{json, Value};
 
 /// External tools WarraqCraft can use, in display order.
-pub const KNOWN_TOOLS: &[&str] = &["tectonic", "xelatex", "lualatex", "pdflatex", "bibtex", "biber", "latexmk", "synctex", "git"];
+pub const KNOWN_TOOLS: &[&str] = &["tectonic", "xelatex", "lualatex", "pdflatex", "bibtex", "biber", "latexmk", "synctex", "git", "typst"];
 
 /// One tool's probe result.
 #[derive(Debug)]
