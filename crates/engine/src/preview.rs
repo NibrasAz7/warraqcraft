@@ -536,6 +536,9 @@ impl typeset::Cites for EngineCites {
     fn entries(&self) -> Vec<String> {
         self.order.iter().enumerate().map(|(i, k)| format!("[{}] {}", i + 1, self.fmt(k))).collect()
     }
+    fn field(&self, key: &str, name: &str) -> Option<String> {
+        self.bib.get(key)?.field(name).map(|s| s.chars().take(512).collect())
+    }
 }
 
 /// Read every `.bib` named by `\bibliography{a,b}`/`\addbibresource`

@@ -411,3 +411,14 @@ widget) are tracked there — nothing in M0 depends on them.
   print `?`. The old `resolve_refs` was split into `number_pass`
   (collects labels + bibitem numbers, returns both maps) and
   `ref_pass` so cite and ref resolution share one numbering sweep.
+- TASK-31 — natbib cite modes: `Unit::Cite` carries a `CiteMode`
+  (`Num`/`Paren`/`Text`/`Year`/`Author` for `\cite`, `\citep`/
+  `\parencite`, `\citet`/`\textcite`, `\citeyear`, `\citeauthor`).
+  Author-year data comes from `\bibitem[Auth(Year)]` labels (the
+  real natbib convention, parsed by `parse_ay_label` into a new
+  `Nums.bibay` map) or `Cites::field(key, "author"/"year")`, which
+  `EngineCites` now implements against parsed `.bib` entries.
+  `short_authors` folds `Last, First and …` lists to
+  `Vaswani and Shazeer`/`Knuth et al.`. Modes without author-year
+  data degrade to `[n]` (`?` for year/author) — the numeric style
+  stays the honest default.

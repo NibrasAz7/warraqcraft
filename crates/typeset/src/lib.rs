@@ -594,9 +594,11 @@ enum Unit {
     Item { marker: Option<String>, depth: u32 },
     /// Raised marker text — footnote reference numbers.
     Sup(String),
-    /// `\cite` keys — resolved to `[n]` markers (or `[key]` literals)
+    /// `\cite` keys — resolved to markers (or `[key]` literals)
     /// between parse and layout, so downstream never sees this.
-    Cite(Vec<String>),
+    /// `mode` is the natbib rendering shape: `[n]`, `(A., 1984)`,
+    /// `A. (1984)`, bare year, or bare author.
+    Cite { keys: Vec<String>, mode: CiteMode },
     /// `\ref`/`\eqref` — resolved to the label's number pre-layout;
     /// `paren` wraps it `(n)` (eqref style). `??` when unresolved.
     Ref { key: String, paren: bool },
@@ -604,6 +606,21 @@ enum Unit {
     /// was declared; the numbering pass maps it to the enclosing
     /// numbered construct (section, equation).
     Label(String),
+}
+
+/// Which natbib cite shape a `Unit::Cite` resolves to.
+#[derive(Clone, Copy, Debug)]
+pub enum CiteMode {
+    /// `\cite` — `[n]`.
+    Num,
+    /// `\citep`/`\parencite` — `(Auth., Year)`, `[n]` without data.
+    Paren,
+    /// `\citet`/`\textcite` — `Auth. (Year)`, `[n]` without data.
+    Text,
+    /// `\citeyear` — bare `Year` (`?` when unknown).
+    Year,
+    /// `\citeauthor` — bare `Auth.` (`?` when unknown).
+    Author,
 }
 
 /// Citation backend the caller supplies — unsrt semantics: keys are
@@ -615,6 +632,11 @@ pub trait Cites {
     fn num(&mut self, key: &str) -> Option<usize>;
     /// Formatted reference entries in printed order (`[1] …`, `[2] …`).
     fn entries(&self) -> Vec<String>;
+    /// A raw `.bib` field for author-year renders (`author`, `year`);
+    /// `None` by default — backends without field data get `[n]`.
+    fn field(&self, _key: &str, _name: &str) -> Option<String> {
+        None
+    }
 }
 
 /// A parse event: inline content, a paragraph boundary, or a heading.
@@ -915,7 +937,14 @@ fn stream(
                     "newline" => units.push(Unit::Break),
                     "cite" | "citep" | "citet" | "parencite" | "textcite" | "footcite" | "citeyear" | "citeauthor" => {
                         // Optional [..] args (up to two), then {keys} —
-                        // a Cite unit resolved to `[n]` markers later.
+                        // a Cite unit resolved to markers pre-layout.
+                        let mode = match name.as_str() {
+                            "citep" | "parencite" => CiteMode::Paren,
+                            "citet" | "textcite" => CiteMode::Text,
+                            "citeyear" => CiteMode::Year,
+                            "citeauthor" => CiteMode::Author,
+                            _ => CiteMode::Num,
+                        };
                         for _ in 0..2 {
                             if chars.get(i) == Some(&'[') {
                                 let mut j = i + 1;
@@ -932,7 +961,7 @@ fn stream(
                         if ks.is_empty() {
                             return None;
                         }
-                        units.push(Unit::Cite(ks));
+                        units.push(Unit::Cite { keys: ks, mode });
                     }
                     "bibliography" if top => {
                         let _ = braced_name(chars, &mut i)?;
@@ -1141,7 +1170,9 @@ fn unit_w(u: &Unit, size: f64, space_w: f64, measure: &dyn Fn(char, f64, Style) 
         Unit::Sup(t) => t.chars().map(|c| measure(c, size * 0.65, Style::Regular)).sum(),
         // Cites resolve to Word before layout — the literal width is a
         // safe fallback if a caller forgets the resolution pass.
-        Unit::Cite(ks) => ks.join(",").chars().map(|c| measure(c, size, Style::Regular)).sum::<f64>() + 2.0 * measure('[', size, Style::Regular),
+        Unit::Cite { keys: ks, .. } => {
+            ks.join(",").chars().map(|c| measure(c, size, Style::Regular)).sum::<f64>() + 2.0 * measure('[', size, Style::Regular)
+        }
         // Refs/labels resolve or skip before layout — zero-width
         // fallbacks so an unresolved one costs nothing.
         Unit::Ref { key, .. } => key.chars().map(|c| measure(c, size, Style::Regular)).sum(),
@@ -1349,7 +1380,7 @@ fn emit_line(seg: &[Unit], s: usize, ce: usize, cfg: &ParaCfg, justify: bool, ma
             Unit::Glue { .. } => lay.x += space_w + extra,
             Unit::Break | Unit::Item { .. } => {}
             // Resolved to Word or skipped before layout.
-            Unit::Cite(_) | Unit::Ref { .. } | Unit::Label(_) => {}
+            Unit::Cite { .. } | Unit::Ref { .. } | Unit::Label(_) => {}
         }
     }
     Fragment { items: lay.items, width: lay.x, height: lay.top.max(size * 0.7), depth: -lay.bottom.min(0.0), baseline: 0.0 }
@@ -1515,7 +1546,10 @@ fn units_key(units: &[Unit], tag: u64) -> u64 {
                 mix(h, *depth as u64)
             }
             Unit::Sup(t) => t.chars().fold(mix(h, 8), |h, c| mix(h, c as u64)),
-            Unit::Cite(ks) => ks.iter().flat_map(|k| k.chars()).fold(mix(h, 9), |h, c| mix(h, c as u64)),
+            Unit::Cite { keys: ks, mode } => {
+                let h = mix(h, 9 + *mode as u64);
+                ks.iter().flat_map(|k| k.chars()).fold(h, |h, c| mix(h, c as u64))
+            }
             Unit::Ref { key, paren } => key.chars().fold(mix(h, 10), |h, c| mix(h, c as u64)) + *paren as u64,
             Unit::Label(k) => k.chars().fold(mix(h, 11), |h, c| mix(h, c as u64)),
         };
@@ -1556,32 +1590,117 @@ fn close_seg(segs: &mut Vec<Segment>, prev: &[Segment], used: &mut [bool], key: 
 /// `[?]` for unknown keys when resolution exists at all, `[key]`
 /// literals when it doesn't. Runs between parse and layout so
 /// breaking/keys see resolved text.
-fn resolve_cites(units: &mut [Unit], cites: &mut Option<&mut dyn Cites>, bibn: &std::collections::HashMap<String, usize>) {
-    for u in units.iter_mut() {
-        if let Unit::Cite(ks) = u {
-            let inner = if !bibn.is_empty() || cites.is_some() {
-                ks.iter()
-                    .map(|k| match bibn.get(k).copied().or_else(|| cites.as_deref_mut().and_then(|r| r.num(k))) {
-                        Some(n) => n.to_string(),
-                        None => "?".to_string(),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(",")
-            } else {
-                ks.join(",")
-            };
-            let text = format!("[{inner}]");
-            *u = Unit::Word(text.chars().map(|c| (c, Style::Regular)).collect());
+fn resolve_cites(
+    units: &mut [Unit],
+    cites: &mut Option<&mut dyn Cites>,
+    bibn: &std::collections::HashMap<String, usize>,
+    bibay: &std::collections::HashMap<String, (String, String)>,
+) {
+    // Author-year data for a key: a `\bibitem[Auth(Year)]` label wins,
+    // then the `.bib` backend's author/year fields (surname-shortened).
+    let ay = |k: &str, cites: &mut Option<&mut dyn Cites>| -> Option<(String, String)> {
+        if let Some(a) = bibay.get(k) {
+            return Some(a.clone());
         }
+        let c = cites.as_deref()?;
+        let a = c.field(k, "author").or_else(|| c.field(k, "editor"))?;
+        let y = c.field(k, "year")?;
+        Some((short_authors(&a), y))
+    };
+    for u in units.iter_mut() {
+        let Unit::Cite { keys: ks, mode } = u else { continue };
+        let resolved = !bibn.is_empty() || cites.is_some();
+        let nums = |ks: &[String], cites: &mut Option<&mut dyn Cites>| {
+            ks.iter()
+                .map(|k| match bibn.get(k).copied().or_else(|| cites.as_deref_mut().and_then(|r| r.num(k))) {
+                    Some(n) => n.to_string(),
+                    None => "?".to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let text = match mode {
+            CiteMode::Year => {
+                if resolved {
+                    ks.iter().map(|k| ay(k, cites).map(|a| a.1).unwrap_or_else(|| "?".to_string())).collect::<Vec<_>>().join(", ")
+                } else {
+                    ks.join(",")
+                }
+            }
+            CiteMode::Author => {
+                if resolved {
+                    ks.iter().map(|k| ay(k, cites).map(|a| a.0).unwrap_or_else(|| "?".to_string())).collect::<Vec<_>>().join("; ")
+                } else {
+                    ks.join(",")
+                }
+            }
+            CiteMode::Paren | CiteMode::Text => {
+                let ays: Option<Vec<(String, String)>> = if resolved { ks.iter().map(|k| ay(k, cites)).collect() } else { None };
+                match (ays, mode) {
+                    (Some(v), CiteMode::Paren) => format!("({})", v.iter().map(|(a, y)| format!("{a}, {y}")).collect::<Vec<_>>().join("; ")),
+                    (Some(v), CiteMode::Text) => v.iter().map(|(a, y)| format!("{a} ({y})")).collect::<Vec<_>>().join("; "),
+                    _ => {
+                        let inner = if resolved { nums(ks, cites) } else { ks.join(",") };
+                        format!("[{inner}]")
+                    }
+                }
+            }
+            CiteMode::Num => {
+                let inner = if resolved { nums(ks, cites) } else { ks.join(",") };
+                format!("[{inner}]")
+            }
+        };
+        *u = Unit::Word(text.chars().map(|c| (c, Style::Regular)).collect());
+    }
+}
+
+/// `"Vaswani, Ashish and Shazeer, Noam"` → `"Vaswani and Shazeer"`,
+/// three or more → `"Vaswani et al."`. BibTeX `Last, First` yields the
+/// part before the comma; `First Last` yields the last word.
+fn short_authors(author: &str) -> String {
+    let mut names: Vec<String> = author
+        .split(" and ")
+        .filter_map(|n| {
+            let n = n.trim();
+            if n.is_empty() {
+                return None;
+            }
+            Some(match n.split_once(',') {
+                Some((last, _)) => last.trim().to_string(),
+                None => n.rsplit(' ').next().unwrap_or(n).to_string(),
+            })
+        })
+        .collect();
+    match names.len() {
+        0 => author.trim().to_string(),
+        1 => names.pop().unwrap_or_default(),
+        2 => format!("{} and {}", names[0], names[1]),
+        _ => format!("{} et al.", names[0]),
     }
 }
 
 /// Numbered constructs in a document — filled by [`number_pass`]:
-/// `\label` → enclosing number, `\bibitem` key → its position.
+/// `\label` → enclosing number, `\bibitem` key → its position and
+/// (from an `[Auth(Year)]` optional label) author-year data.
 #[derive(Default)]
 struct Nums {
     labels: std::collections::HashMap<String, String>,
     bib: std::collections::HashMap<String, usize>,
+    bibay: std::collections::HashMap<String, (String, String)>,
+}
+
+/// Parse a natbib `\bibitem[…]` optional label — `Auth(Year)`,
+/// `Auth(1984a)`, `Auth(1984)Short` — into `(author, year)`. Returns
+/// `None` for labels that aren't author-year shaped.
+fn parse_ay_label(label: &str) -> Option<(String, String)> {
+    let open = label.rfind('(')?;
+    let close = label[open..].find(')')? + open;
+    let author = label[..open].trim();
+    let year = label[open + 1..close].trim();
+    if author.is_empty() || year.is_empty() || year.len() > 8 || !year.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some((short_authors(author), year.to_string()))
 }
 
 /// Sweep over the event stream assigning numbers: section headings
@@ -1631,6 +1750,11 @@ fn number_pass(evs: &mut [Ev]) -> Nums {
                 let n = nums.bib.len() + 1;
                 nums.bib.insert(key.clone(), n);
                 cur = n.to_string();
+                // A `\bibitem[Auth(Year)]` label carries natbib's
+                // author-year data for citep/citet renders.
+                if let Some((a, y)) = marker.as_deref().and_then(parse_ay_label) {
+                    nums.bibay.insert(key.clone(), (a, y));
+                }
                 let mark = marker.take().unwrap_or_else(|| format!("[{n}]"));
                 *ev = Ev::Unit(Unit::Item { marker: Some(mark), depth: 1 });
             }
@@ -1716,8 +1840,8 @@ pub fn doc_segments(
     let nums = number_pass(&mut evs);
     for ev in &mut evs {
         match ev {
-            Ev::Unit(u) => resolve_cites(std::slice::from_mut(u), &mut cites, &nums.bib),
-            Ev::Heading(us, _) | Ev::Note(us) | Ev::Meta(_, us) => resolve_cites(us, &mut cites, &nums.bib),
+            Ev::Unit(u) => resolve_cites(std::slice::from_mut(u), &mut cites, &nums.bib, &nums.bibay),
+            Ev::Heading(us, _) | Ev::Note(us) | Ev::Meta(_, us) => resolve_cites(us, &mut cites, &nums.bib, &nums.bibay),
             _ => {}
         }
     }
@@ -2206,6 +2330,59 @@ mod tests {
         assert!(all.contains("[2] entry a"), "{all}");
         // Without a backend, \bibliography falls back.
         assert!(doc_segments(src, 10.0, 400.0, &fixed, &[], None).is_none());
+    }
+
+    #[test]
+    fn cite_modes_render_author_year() {
+        fn texts(blocks: &[Block]) -> String {
+            let mut all = String::new();
+            for b in blocks {
+                if let Block::Line(f) = b {
+                    for i in &f.items {
+                        if let Item::Text { text, .. } = i {
+                            all.push_str(text);
+                            all.push('|');
+                        }
+                    }
+                }
+            }
+            all
+        }
+        // natbib labels on \bibitem feed citep/citet/citeyear/citeauthor.
+        let src = "See \\citep{a}, \\citet{a}, \\citeyear{a}, \\citeauthor{a}, \\cite{a}.\n\n\\begin{thebibliography}{9}\n\\bibitem[Vaswani, Ashish and Shazeer, Noam(2017)]{a} Attention paper.\n\\end{thebibliography}\n";
+        let all = texts(&doc(src, 10.0, 400.0, &fixed).unwrap());
+        assert!(all.contains("(Vaswani and Shazeer, 2017)"), "{all}");
+        assert!(all.contains("Vaswani and Shazeer (2017)"), "{all}");
+        assert!(all.contains("2017"), "{all}");
+        assert!(all.contains("Vaswani and Shazeer"), "{all}");
+        assert!(all.contains("[1]"), "{all}");
+
+        // .bib backend fields via Cites::field — et al. for 3+ authors.
+        struct F;
+        impl Cites for F {
+            fn num(&mut self, key: &str) -> Option<usize> {
+                (key == "b").then_some(1)
+            }
+            fn entries(&self) -> Vec<String> {
+                vec![]
+            }
+            fn field(&self, key: &str, name: &str) -> Option<String> {
+                if key != "b" {
+                    return None;
+                }
+                match name {
+                    "author" => Some("Knuth, Donald and Lamport, Leslie and Patashnik, Oren".to_string()),
+                    "year" => Some("1984".to_string()),
+                    _ => None,
+                }
+            }
+        }
+        let mut f = F;
+        let src2 = "Cited \\citep{b} and \\citet{b} work.";
+        let segs = doc_segments(src2, 10.0, 400.0, &fixed, &[], Some(&mut f)).unwrap();
+        let all2 = texts(&segs.iter().flat_map(|s| s.blocks.iter().cloned()).collect::<Vec<_>>());
+        assert!(all2.contains("(Knuth et al., 1984)"), "{all2}");
+        assert!(all2.contains("Knuth et al. (1984)"), "{all2}");
     }
 
     #[test]
