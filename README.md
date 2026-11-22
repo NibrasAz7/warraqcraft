@@ -9,6 +9,8 @@
   <b>A LaTeX studio for the desktop; open source, local-first, built in pure Rust.</b><br>
   Overleaf-class editing comfort — project awareness, real compilation, SyncTeX,<br>
   citations, history — without a server account or cloud dependency.<br>
+  <b>The typesetting engine under the writing tools</b> — LaTeX-grade PDF output<br>
+  and BibTeX/CSL-JSON citations on your own machine.<br>
   <i>Named after the</i> warrāq <i>(ورّاق), the paper-makers and copyists of the medieval manuscript trade.</i><br>
   macOS · Windows · Linux · BSD · the web
 </p>
@@ -77,7 +79,7 @@ Tectonic or system TeX, hayro-rendered PDF preview, clickable error log, and **t
 - **Editing helpers** — slim formatting toolbar, section and math insertion, common environments, categorized Greek/operator/relation/arrow symbol palette, line operations and occurrence mirrors.
 - **Documents and recovery** — untitled buffers protected by dirty-state guards; autosave of text, path and cursor offered on restart; external disk changes surface an explicit reload/overwrite choice, never silent data loss.
 - **Git collaboration** — repository detection, branch/status display, initialize/pull/push/commit, conflict counts and guarded branch commands; credentials stay with the user's Git tooling.
-- **Bibliography and references** — project-wide `\label`/`\ref` completion, `.bib` parsing, inline `\cite` key completion, searchable cite dialog and bibliography backend detection.
+- **Bibliography and references** — project-wide `\label`/`\ref` completion, `.bib` parsing, inline `\cite` key completion, searchable cite dialog and bibliography backend detection; `cite.fetch` resolves DOI/arXiv/PMID records, `bib.import` folds a reference manager's CSL-JSON (Zotero) or RIS export into a project `.bib` with deduplication, `bib.audit` flags duplicates, and the library pane attaches PDFs per cite key. Deliberately **not a reference manager** — Zotero already covers storage, free — WarraqCraft cites from the library you already keep and differentiates on typesetting and authoring.
 - **Templates** — 144 original source-only starters (article, beamer, letter, report, book, thesis, CV, homework, poster × 16 document languages) plus an explicit user/community import that records provenance.
 - **History and tools** — `.warraqcraft/` snapshot history, named user tools, math preview, document statistics, Hunspell spell-checking, printing and PDF export.
 - **Multilingual UI** — English fallback plus Arabic, Persian, Urdu, French, Italian, German, Spanish, Portuguese, Turkish, Latin, Russian, Mandarin, Japanese, Korean and Hindi.
